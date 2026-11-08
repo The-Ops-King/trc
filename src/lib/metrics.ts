@@ -188,6 +188,59 @@ export async function periodTotals(from: Date, to: Date): Promise<PeriodTotals> 
   return { ...base!, by_group, failed: failed! };
 }
 
+export type PeriodFunnel = {
+  onb_booked: number;
+  onb_attended: number;
+  onb_unknown: number;
+  ht_buyers: number;
+  ht_after_onb_attended: number;
+  ht_cash: number;
+  ht_purchases: number;
+  ht_pif: number;
+  ht_financing: number;
+  ht_plan: number;
+};
+
+/**
+ * Onboarding and high-ticket numbers for [from, to] by event date:
+ * calls by their scheduled time, purchases by first payment, cash by payment date.
+ * Covers every buyer, not only webinar registrants.
+ */
+export async function periodFunnel(from: Date, to: Date): Promise<PeriodFunnel> {
+  const sql = db();
+  const [row] = await sql<PeriodFunnel[]>`
+    with onb as (
+      select * from trc.onboarding_attribution
+      where start_at >= ${from} and start_at < ${to} and coalesce(appointment_status, '') <> 'cancelled'
+    ),
+    ht as (
+      select * from trc.purchases
+      where product_group in ('ignite', 'mastermind') and first_paid_at >= ${from} and first_paid_at < ${to}
+    )
+    select
+      (select count(distinct email_key)::int from onb) as onb_booked,
+      (select count(distinct email_key) filter (where attended)::int from onb) as onb_attended,
+      (select count(distinct email_key) filter (where attended is null)::int from onb) as onb_unknown,
+      (select count(distinct email_key)::int from ht) as ht_buyers,
+      (select count(distinct ht.email_key)::int from ht where exists (
+         select 1 from trc.onboarding_attribution o
+         where o.email_key = ht.email_key and o.start_at <= ht.first_paid_at and o.attended
+       )) as ht_after_onb_attended,
+      (select coalesce(sum(net_usd), 0) from trc.paid_payments
+        where product_group in ('ignite', 'mastermind') and paid_at >= ${from} and paid_at < ${to}) as ht_cash,
+      (select count(*)::int from ht) as ht_purchases,
+      (select count(*) filter (where payment_type = 'pif')::int from ht) as ht_pif,
+      (select count(*) filter (where payment_type = 'third_party_financing')::int from ht) as ht_financing,
+      (select count(*) filter (where payment_type = 'payment_plan')::int from ht) as ht_plan`;
+  return row!;
+}
+
+export async function lastSuccessfulSync(): Promise<Date | null> {
+  const sql = db();
+  const [row] = await sql<Array<{ at: Date | null }>>`select max(started_at) as at from trc.sync_runs where ok`;
+  return row?.at ?? null;
+}
+
 export async function lastSync() {
   const sql = db();
   const [row] = await sql<Array<{ started_at: Date; finished_at: Date | null; ok: boolean | null; detail: Record<string, { ok: boolean; skipped?: string; error?: string }> | null }>>`

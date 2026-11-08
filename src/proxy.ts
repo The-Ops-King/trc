@@ -13,5 +13,5 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   // Everything except static assets, the login flow and the cron endpoint (which uses CRON_SECRET).
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|login|api/login|api/cron/).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|logo.png|login|api/login|api/cron/).*)"],
 };

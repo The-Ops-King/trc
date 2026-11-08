@@ -3,11 +3,12 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main>
       <form className="card login" method="post" action="/api/login">
-        <h1>TRC Dashboard</h1>
+        <img src="/logo.png" alt="Tiffany Rose Coaching" />
+        <div className="muted small">Funnel Dashboard</div>
         <input type="password" name="password" placeholder="Password" autoFocus required autoComplete="current-password" />
         <button className="primary" type="submit">Sign in</button>
-        {error === "1" && <p className="small" style={{ color: "var(--bad)" }}>Wrong password.</p>}
-        {error === "config" && <p className="small" style={{ color: "var(--bad)" }}>DASHBOARD_PASSWORD is not set for this deployment.</p>}
+        {error === "1" && <p className="err">Wrong password.</p>}
+        {error === "config" && <p className="err">DASHBOARD_PASSWORD is not set for this deployment.</p>}
       </form>
     </main>
   );
