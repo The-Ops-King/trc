@@ -1,4 +1,4 @@
-/* Tiffany Rose Coaching brand: black, gold #DCC185, cream #F5F1E8, Larken serif.
+/* Tiffany Rose Coaching brand, light: cream page, white cards, gold #DCC185, Larken serif.
    Larken is loaded from TRC's own GHL asset CDN (same files the website uses);
    Georgia is the fallback if those files ever move. */
 @font-face {
@@ -15,27 +15,28 @@
 }
 
 :root {
-  --bg: #0a0908;
-  --surface: #141210;
-  --surface-2: #1b1815;
-  --border: #2b2620;
-  --text: #f5f1e8;
-  --muted: #a69d8d;
-  --gold: #dcc185;
-  --gold-dim: #8f7a4c;
-  --green: #37ca37;
-  --warn: #e3a948;
-  --bad: #e6675c;
+  --bg: #f7f3ea;
+  --surface: #ffffff;
+  --surface-2: #fffdf9;
+  --border: #e7dcc5;
+  --text: #1d1913;
+  --muted: #6f6656;
+  --gold: #8a6a2c;        /* gold for text on light: #DCC185 is too pale to read */
+  --gold-fill: #dcc185;   /* the brand gold, for fills */
+  --gold-dim: #c9b07a;
+  --green: #2fae2f;
+  --warn: #a8680a;
+  --bad: #b9382d;
   --serif: "Larken", Georgia, "Times New Roman", serif;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body {
   background:
-    radial-gradient(1200px 500px at 50% -200px, rgba(220, 193, 133, 0.10), transparent 70%),
+    radial-gradient(1200px 500px at 50% -200px, rgba(220, 193, 133, 0.28), transparent 70%),
     var(--bg);
   background-attachment: fixed;
   color: var(--text);
@@ -60,7 +61,7 @@ header { padding: 4px 0 18px; border-bottom: 1px solid var(--border); }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .seg a { padding: 6px 12px; color: var(--muted); font-family: var(--sans); font-size: 13px; border-left: 1px solid var(--border); }
 .seg a:first-child { border-left: none; }
-.seg a.active { background: var(--gold); color: #1a1408; font-weight: 600; }
+.seg a.active { background: var(--gold-fill); color: #2a2110; font-weight: 600; }
 
 /* Buttons */
 button, .btn {
@@ -79,7 +80,7 @@ section h2 {
 section h2 .muted { font-weight: 400; letter-spacing: 0.02em; text-transform: none; font-size: 13px; }
 
 /* Cards */
-.card { background: linear-gradient(180deg, var(--surface-2), var(--surface)); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+.card { background: linear-gradient(180deg, var(--surface-2), var(--surface)); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; box-shadow: 0 1px 2px rgba(60, 45, 15, 0.05); }
 .grid { display: grid; gap: 10px; }
 .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -117,7 +118,7 @@ table.mini td + td { padding-left: 10px; }
 
 /* Notices, details, definitions */
 .notice { padding: 10px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); margin-top: 14px; font: 13px var(--sans); }
-.notice.err { border-color: color-mix(in srgb, var(--bad) 60%, transparent); color: #f3c2bd; }
+.notice.err { border-color: color-mix(in srgb, var(--bad) 50%, transparent); background: #fdf1ef; color: var(--bad); }
 details.more { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 8px; }
 details.more summary { cursor: pointer; color: var(--muted); font: 13px var(--sans); padding: 6px 0; }
 details.more summary:hover { color: var(--gold); }
@@ -131,8 +132,8 @@ ul.defs b { color: var(--text); }
 .login img { width: 170px; height: auto; margin-bottom: 10px; }
 .login input {
   width: 100%; font: 15px var(--sans); padding: 10px 12px; border-radius: 5px;
-  border: 1px solid var(--border); background: var(--bg); color: var(--text); margin: 14px 0 12px;
+  border: 1px solid var(--border); background: #fff; color: var(--text); margin: 14px 0 12px;
 }
-.login input:focus { outline: 2px solid var(--gold-dim); border-color: var(--gold-dim); }
+.login input:focus { outline: 2px solid var(--gold-fill); border-color: var(--gold-dim); }
 .login button { width: 100%; padding: 11px; }
 .login .err { color: var(--bad); font: 13px var(--sans); }
