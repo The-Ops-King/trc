@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { safeEqual } from "@/lib/auth";
 import { db, poolerMode } from "@/lib/db";
-import { lastSuccessfulSync, lastSync, periodFunnel, periodTotals, registrantsByWebinarDay, sessionMetrics } from "@/lib/metrics";
+import { lastSuccessfulSync, lastSync, loadDashboard, periodFunnel, periodTotals, registrantsByWebinarDay, sessionMetrics } from "@/lib/metrics";
 
 export const maxDuration = 300;
 
@@ -29,6 +29,20 @@ export async function GET(request: Request) {
     ["lastSuccessfulSync", () => lastSuccessfulSync()],
   ];
   const out: Array<{ step: string; ms: number; ok: boolean; note?: string }> = [];
+  if (new URL(request.url).searchParams.get("page") === "1") {
+    // exactly what the dashboard page runs
+    const t0 = Date.now(); const timings: Record<string, number> = {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        loadDashboard(from, now, new Date(from.getTime() - days * 86_400_000), new Date(now.getTime() + 14 * 86_400_000), (l, ms) => { timings[l] = ms; }),
+        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("no answer within 40s")), 40_000); }),
+      ]);
+      return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, pooler: poolerMode(), page: true, ok: true, totalMs: Date.now() - t0, timings });
+    } catch (err) {
+      return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, pooler: poolerMode(), page: true, ok: false, error: String(err), timings });
+    } finally { clearTimeout(timer); }
+  }
   if (new URL(request.url).searchParams.get("parallel") === "1") {
     // as the page does it: everything at once
     const t0 = Date.now();

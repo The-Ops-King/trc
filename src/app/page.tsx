@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { hasSession } from "@/lib/guard";
 import { env } from "@/lib/env";
 import {
-  lastSuccessfulSync, lastSync, periodFunnel, periodTotals, registrantsByWebinarDay, sessionMetrics, PITCH_MINUTE, type SessionRow,
+  loadDashboard, PITCH_MINUTE, type SessionRow,
 } from "@/lib/metrics";
 import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } from "@/lib/format";
 import { laWallTimeToUtc } from "@/lib/session";
@@ -27,12 +27,6 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-/** Logs how long each query took (Vercel runtime logs), so the next slow load names its slow step. */
-async function timed<T>(label: string, p: Promise<T>): Promise<T> {
-  const t0 = Date.now();
-  try { return await p; }
-  finally { const ms = Date.now() - t0; if (ms > 2000) console.warn(`[dashboard] slow query ${label}: ${ms}ms`); }
-}
 
 type CardState = { needs?: string; warn?: string };
 
@@ -122,18 +116,12 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
   let data;
   try {
-    data = await withDeadline(Promise.all([
-      timed("periodTotals", periodTotals(from, now)),
-      timed("periodFunnel", periodFunnel(from, now)),
-      timed("sessionMetrics", sessionMetrics(from, new Date(now.getTime() + 14 * DAY))),
-      timed("lastSync", lastSync()),
-      timed("lastSuccessfulSync", lastSuccessfulSync()),
-      timed("registrantsByWebinarDay", registrantsByWebinarDay(from, now)),
-      timed("prev.periodTotals", periodTotals(prevFrom, from)),
-      timed("prev.periodFunnel", periodFunnel(prevFrom, from)),
-      timed("prev.sessionMetrics", sessionMetrics(prevFrom, from)),
-      timed("prev.registrantsByWebinarDay", registrantsByWebinarDay(prevFrom, from)),
-    ]), PAGE_DEADLINE_MS);
+    data = await withDeadline(
+      loadDashboard(from, now, prevFrom, new Date(now.getTime() + 14 * DAY), (label, ms) => {
+        if (ms > 2000) console.warn(`[dashboard] slow query ${label}: ${ms}ms`);
+      }),
+      PAGE_DEADLINE_MS,
+    );
   } catch (err) {
     console.error(`[dashboard] page data failed: ${err instanceof Error ? err.message : String(err)}`);
     return (

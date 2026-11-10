@@ -282,3 +282,26 @@ export async function lastSync() {
     select started_at, finished_at, ok, detail from trc.sync_runs order by id desc limit 1`;
   return row ?? null;
 }
+
+/**
+ * Everything the dashboard page shows, loaded one query at a time. Supabase's pooler did not answer queries sent stacked on one
+ * another (2026-11-10: the page sent ten at once and hung; the same queries one after another take milliseconds each), so each
+ * query waits for the one before. The diagnostic endpoint runs this same function.
+ */
+export async function loadDashboard(from: Date, now: Date, prevFrom: Date, sessionsTo: Date, onStep?: (label: string, ms: number) => void) {
+  const step = async <T,>(label: string, run: () => Promise<T>): Promise<T> => {
+    const t0 = Date.now();
+    try { return await run(); } finally { onStep?.(label, Date.now() - t0); }
+  };
+  const totals = await step("periodTotals", () => periodTotals(from, now));
+  const funnel = await step("periodFunnel", () => periodFunnel(from, now));
+  const sessions = await step("sessionMetrics", () => sessionMetrics(from, sessionsTo));
+  const sync = await step("lastSync", () => lastSync());
+  const lastOk = await step("lastSuccessfulSync", () => lastSuccessfulSync());
+  const byDay = await step("registrantsByWebinarDay", () => registrantsByWebinarDay(from, now));
+  const pTotals = await step("prev.periodTotals", () => periodTotals(prevFrom, from));
+  const pFunnel = await step("prev.periodFunnel", () => periodFunnel(prevFrom, from));
+  const pSessions = await step("prev.sessionMetrics", () => sessionMetrics(prevFrom, from));
+  const pByDay = await step("prev.registrantsByWebinarDay", () => registrantsByWebinarDay(prevFrom, from));
+  return [totals, funnel, sessions, sync, lastOk, byDay, pTotals, pFunnel, pSessions, pByDay] as const;
+}
