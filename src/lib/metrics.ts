@@ -10,8 +10,13 @@ export type SessionRow = {
   registrants: number;
   ad_spend: number | null;          // allocated (see note in sessionMetrics)
   landing_page_views: number | null;
-  attendees: number | null;         // null until Zoom data exists for the session
-  stayed_to_pitch: number | null;
+  reg_rows: number;                 // the session's sign-ups (rows)...
+  covered_rows: number;             // ...of which on days with ad data; fewer means its spend is incomplete
+  attendees: number | null;        // Zoom when it has the session, else the tracker sheet's show-ups; null when neither
+  attendance_source: "zoom" | "tracker" | null;
+  stayed_to_pitch: number | null;   // Zoom only
+  lm_purchases: number | null;      // $97 lead-magnet sales on the webinar (tracker sheet)
+  lm_cash: number | null;
   buyers: number;
   cash: number;
   attendee_buyers: number | null;
@@ -54,12 +59,20 @@ export async function sessionMetrics(from: Date, to: Date): Promise<SessionRow[]
     ),
     day_tot as (select d, sum(n) as tot from reg_day group by d),
     meta_day as (
-      select date as d, sum(spend_usd) as spend, sum(landing_page_views)::numeric as lpv from trc.meta_daily group by date
+      -- one source per day: Meta when connected for that day, else the tracker sheet (trc.ad_daily)
+      select date as d, sum(spend_usd) as spend, sum(landing_page_views)::numeric as lpv from trc.ad_daily group by date
     ),
+    sheet_day as (select date as d, show_ups, lm_purchases, lm_cash from trc.sheet_webinar_day),
     alloc as (
       select rd.session_at, sum(md.spend * rd.n / dt.tot) as spend, sum(md.lpv * rd.n / dt.tot) as lpv
       from reg_day rd join day_tot dt using (d) join meta_day md using (d)
       group by rd.session_at
+    ),
+    -- how many of the session's sign-ups fell on days that have ad data: below all of them, its cost per registrant is too low
+    coverage as (
+      select rd.session_at, sum(rd.n)::int as reg_rows,
+             coalesce(sum(rd.n) filter (where exists (select 1 from meta_day md where md.d = rd.d)), 0)::int as covered_rows
+      from reg_day rd group by rd.session_at
     ),
     web as (
       select zi.session_at,
@@ -119,7 +132,11 @@ export async function sessionMetrics(from: Date, to: Date): Promise<SessionRow[]
     select
       s.session_at, s.label, s.registrants,
       alloc.spend as ad_spend, alloc.lpv as landing_page_views,
-      web.attendees, web.stayed as stayed_to_pitch,
+      coalesce(coverage.reg_rows, 0) as reg_rows, coalesce(coverage.covered_rows, 0) as covered_rows,
+      coalesce(web.attendees, sd.show_ups) as attendees,
+      case when web.session_at is not null then 'zoom' when sd.show_ups is not null then 'tracker' end as attendance_source,
+      web.stayed as stayed_to_pitch,
+      sd.lm_purchases, sd.lm_cash,
       coalesce(buy.buyers, 0) as buyers, coalesce(buy.cash, 0) as cash,
       case when web.session_at is null then null else coalesce(att_buy.n, 0) end as attendee_buyers,
       coalesce(onb.booked, 0) as onb_booked, coalesce(onb.past, 0) as onb_past, coalesce(onb.attended, 0) as onb_attended, coalesce(onb.unknown, 0) as onb_unknown,
@@ -129,17 +146,24 @@ export async function sessionMetrics(from: Date, to: Date): Promise<SessionRow[]
       coalesce(ht.financing, 0) as ht_financing, coalesce(ht.plan, 0) as ht_plan
     from s
     left join alloc using (session_at)
+    left join coverage using (session_at)
     left join web using (session_at)
     left join buy using (session_at)
     left join att_buy using (session_at)
     left join onb using (session_at)
     left join ht using (session_at)
+    left join sheet_day sd on sd.d = (s.session_at at time zone 'America/Los_Angeles')::date
     order by s.session_at desc`;
 }
 
 export type PeriodTotals = {
   ad_spend: number;
-  landing_page_views: number;
+  landing_page_views: number;       // Meta only
+  link_clicks: number;              // Meta or the tracker sheet
+  registrants_on_ad_days: number;   // registrants on days that have ad data (the registration rate's numerator)
+  ad_source: "meta" | "sheet" | "mixed" | null;
+  ad_last_day: string | null;       // the last day with spend in the window
+  ad_last_any: string | null;       // the last day with spend at all (shows when the sheet stopped updating)
   registrants: number;
   cash_all: number;
   cash_webinar: number;
@@ -152,11 +176,22 @@ export async function periodTotals(from: Date, to: Date): Promise<PeriodTotals> 
   const sql = db();
   const [base] = await sql<Array<Omit<PeriodTotals, "by_group" | "failed">>>`
     select
-      (select coalesce(sum(spend_usd), 0) from trc.meta_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as ad_spend,
-      (select coalesce(sum(landing_page_views), 0)::int from trc.meta_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as landing_page_views,
+      (select coalesce(sum(spend_usd), 0) from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as ad_spend,
+      (select coalesce(sum(landing_page_views), 0)::int from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as landing_page_views,
+      (select coalesce(sum(link_clicks), 0)::int from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as link_clicks,
+      (select case when count(distinct source) > 1 then 'mixed' else max(source) end from trc.ad_daily
+        where date between ${laDay(from)}::date and ${lastDay(to)}::date) as ad_source,
+      (select to_char(max(date), 'YYYY-MM-DD') from trc.ad_daily
+        where date between ${laDay(from)}::date and ${lastDay(to)}::date and spend_usd > 0) as ad_last_day,
+      (select to_char(max(date), 'YYYY-MM-DD') from trc.ad_daily where spend_usd > 0) as ad_last_any,
       (select count(distinct lower(email))::int from trc.registrations
         where (created_at at time zone 'America/Los_Angeles')::date between ${laDay(from)}::date and ${lastDay(to)}::date
           and email is not null) as registrants,
+      -- for the registration rate: only sign-ups on days that have ad data, so a gap in spend cannot inflate it
+      (select count(distinct lower(r.email))::int from trc.registrations r
+        where (r.created_at at time zone 'America/Los_Angeles')::date between ${laDay(from)}::date and ${lastDay(to)}::date
+          and r.email is not null
+          and exists (select 1 from trc.ad_daily a where a.date = (r.created_at at time zone 'America/Los_Angeles')::date)) as registrants_on_ad_days,
       (select coalesce(sum(net_usd), 0) from trc.paid_payments where paid_at >= ${from} and paid_at < ${to}) as cash_all,
       (select coalesce(sum(p.net_usd), 0) from trc.paid_payments p
         where p.paid_at >= ${from} and p.paid_at < ${to}

@@ -64,18 +64,19 @@ function sum<K extends keyof SessionRow>(rows: SessionRow[], k: K): number {
 
 /** Every number on a card, from one period's data, so this period and the one before are computed the same way. */
 function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[]) {
-  const z = held.filter((s) => s.attendees !== null);
-  const att = sum(z, "attendees");
+  const a = held.filter((s) => s.attendees !== null); // attendance from Zoom or the tracker sheet
+  const z = held.filter((s) => s.attendance_source === "zoom"); // stayed-to-pitch and attendee → buyer need Zoom
   const known = f.onb_booked - f.onb_unknown;
-  const rate = (a: number, b: number) => (b ? a / b : null);
+  const rate = (x: number, y: number) => (y ? x / y : null);
   return {
     adSpend: t.ad_spend,
-    regRate: rate(t.registrants, t.landing_page_views),
-    attendance: z.length ? rate(att, sum(z, "registrants")) : null,
-    stayed: z.length ? rate(sum(z, "stayed_to_pitch"), att) : null,
+    regRate: rate(t.registrants_on_ad_days, t.landing_page_views || t.link_clicks),
+    attendance: a.length ? rate(sum(a, "attendees"), sum(a, "registrants")) : null,
+    stayed: z.length ? rate(sum(z, "stayed_to_pitch"), sum(z, "attendees")) : null,
     buyers: sum(held, "buyers"),
     cash: sum(held, "cash"),
-    attBuyer: z.length ? rate(sum(z, "attendee_buyers"), att) : null,
+    lmCash: sum(held, "lm_cash"),
+    attBuyer: z.length ? rate(sum(z, "attendee_buyers"), sum(z, "attendees")) : null,
     onbAttended: f.onb_attended,
     showRate: known > 0 ? f.onb_attended / known : null,
     htFromCalls: f.ht_after_onb_attended,
@@ -159,8 +160,19 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
   const metaOn = !!env.meta();
   const zoomOn = !!env.zoom();
-  const needMeta: CardState = metaOn ? {} : { needs: "Meta Ads" };
-  const needZoom: CardState = zoomOn ? {} : { needs: "Zoom" };
+  // Ad spend: Meta when connected, else the team's tracker sheet (FB Stats).
+  const adOn = metaOn || totals.ad_source !== null || pTotals.ad_source !== null;
+  const needMeta: CardState = adOn ? {} : { needs: "Meta Ads" };
+  const adFromSheet = totals.ad_source === "sheet" || totals.ad_source === "mixed";
+  const yesterday = shiftDays(today, -1);
+  // The tracker's spend feed can stop (it did on 2026-11-03): say so instead of showing a low or $0 spend as if it were real.
+  const adStale = !metaOn && totals.ad_last_any && totals.ad_last_any < (toYmd < yesterday ? toYmd : yesterday) ? totals.ad_last_any : null;
+  const adNone = adOn && totals.ad_source === null; // no spend recorded anywhere in this window
+  const adState: CardState = adOn ? (adStale ? { warn: `Tracker has no ad spend after ${shortDay(adStale)}${adNone ? "" : ": this period is incomplete"}` } : {}) : needMeta;
+  /** A cost per registrant is only shown when spend exists for (nearly) every day its registrants signed up. */
+  const spendComplete = (rows: number, covered: number) => rows > 0 && covered / rows >= 0.95;
+  const incomplete = <span className="pill warn">Cost per registrant: ad spend missing for some sign-up days{adStale ? ` (tracker stopped ${shortDay(adStale)})` : ""}</span>;
+  const regDenom = totals.landing_page_views ? { n: totals.landing_page_views, label: "landing page views" } : { n: totals.link_clicks, label: "link clicks" };
 
   // Webinar numbers (4-8) are per session: sessions held in the selected window.
   const held = sessions.filter((s) => s.session_at <= now && s.session_at < to);
@@ -178,10 +190,14 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     { label: "Last week", range: weekRange(shiftDays(thisMonYmd, -7)), sessions: lastWeek, people: lastWeekPeople, compare: false },
   ];
 
-  const withZoom = held.filter((s) => s.attendees !== null);
+  const withAtt = held.filter((s) => s.attendees !== null);
+  const withZoom = held.filter((s) => s.attendance_source === "zoom");
+  const attFromTracker = withAtt.some((s) => s.attendance_source === "tracker");
+  const needZoom: CardState = withZoom.length ? {} : { needs: "Zoom" };
   const regsHeld = sum(held, "registrants");
-  const attendees = sum(withZoom, "attendees");
-  const regsWithZoom = sum(withZoom, "registrants");
+  const attendees = sum(withAtt, "attendees");
+  const regsWithAtt = sum(withAtt, "registrants");
+  const zoomAttendees = sum(withZoom, "attendees");
 
   // Onboarding attendance is only meaningful for calls with a known result.
   const onbKnown = funnel.onb_booked - funnel.onb_unknown;
@@ -229,17 +245,20 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
       <section>
         <h2>Ads <span className="muted small">· {periodLabel}</span></h2>
         <div className="grid g2">
-          <Card n={1} title="Ad spend" value={usd(totals.ad_spend)} sub="Meta Ads, all webinar campaigns"
-            help="Total Meta Ads spend in the selected period." state={needMeta}
-            delta={<Delta cur={cur.adSpend} prev={prev.adSpend} kind="count" better="neither" label={vsLabel} />} />
-          <Card n={3} title="Registration rate" value={pct(totals.registrants, totals.landing_page_views)}
-            sub={`${num(totals.registrants)} registrants · ${num(totals.landing_page_views)} landing page views`}
-            help="Registrants ÷ Meta landing page views." state={needMeta}
+          <Card n={1} title="Ad spend" value={adNone ? "—" : usd(totals.ad_spend)}
+            sub={adFromSheet || !metaOn ? "webinar campaigns · from the team's tracker sheet (FB Stats)" : "Meta Ads, webinar campaigns"}
+            help="Facebook spend on the webinar campaigns in the selected period. From Meta when connected, otherwise from the team's tracker sheet." state={adState}
+            delta={adNone || adStale ? undefined : <Delta cur={cur.adSpend} prev={prev.adSpend} kind="count" better="neither" label={vsLabel} />} />
+          <Card n={3} title="Registration rate" value={pct(totals.registrants_on_ad_days, regDenom.n)}
+            sub={`${num(totals.registrants_on_ad_days)} registrants · ${num(regDenom.n)} ${regDenom.label}${totals.registrants_on_ad_days < totals.registrants ? " (days with ad data only)" : ""}`}
+            help={`Registrants ÷ ${regDenom.label}, counting only days that have ad data. Landing page views come with the Meta connection; until then the tracker sheet's link clicks are used.`} state={adState}
             delta={<Delta cur={cur.regRate} prev={prev.regRate} kind="rate" label={vsLabel} />} />
         </div>
         {weekRows.map((w) => {
           const spend = w.sessions.reduce((t, x) => t + (Number(x.ad_spend) || 0), 0);
           const lastSpend = lastWeek.reduce((t, x) => t + (Number(x.ad_spend) || 0), 0);
+          const weekComplete = spendComplete(sum(w.sessions, "reg_rows"), sum(w.sessions, "covered_rows"));
+          const lastWeekComplete = spendComplete(sum(lastWeek, "reg_rows"), sum(lastWeek, "covered_rows"));
           return (
             <div key={w.label} className="week">
               <div className="row spread week-head">
@@ -271,8 +290,11 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                           label={cmp === "final" ? `vs ${num(ref)} final for ${shortDate(ago.session_at)}` : `vs ${num(ref)} for ${shortDate(ago.session_at)} at this point last week`} />;
                       })()}
                       <div className="metric-sub">
-                        {metaOn ? <span><b className="strong">{usd(div(x.ad_spend, x.registrants), 2)}</b> per registrant · {usd(x.ad_spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
-                        {metaOn && w.compare && ago && <Delta cur={div(x.ad_spend, x.registrants)} prev={div(ago.ad_spend, ago.registrants)} kind="count" better="down" label="cost per registrant" />}
+                        {!adOn ? <span className="pill">Cost per registrant: connect Meta Ads</span>
+                          : !spendComplete(x.reg_rows, x.covered_rows) ? incomplete
+                          : <span><b className="strong">{usd(div(x.ad_spend, x.registrants), 2)}</b> per registrant · {usd(x.ad_spend)} spend</span>}
+                        {adOn && w.compare && ago && spendComplete(x.reg_rows, x.covered_rows) && spendComplete(ago.reg_rows, ago.covered_rows) &&
+                          <Delta cur={div(x.ad_spend, x.registrants)} prev={div(ago.ad_spend, ago.registrants)} kind="count" better="down" label="cost per registrant" />}
                       </div>
                     </div>
                   );
@@ -285,8 +307,11 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                     return <Delta cur={w.people} prev={ref} kind="count" label={cmp === "final" ? `vs ${num(ref)} last week (final)` : `vs ${num(ref)} last week at this point`} />;
                   })()}
                   <div className="metric-sub">
-                    {metaOn ? <span><b className="strong">{usd(div(spend, w.people), 2)}</b> per registrant · {usd(spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
-                    {metaOn && w.compare && <Delta cur={div(spend, w.people)} prev={div(lastSpend, lastWeekPeople)} kind="count" better="down" label="cost per registrant" />}
+                    {!adOn ? <span className="pill">Cost per registrant: connect Meta Ads</span>
+                      : !weekComplete ? incomplete
+                      : <span><b className="strong">{usd(div(spend, w.people), 2)}</b> per registrant · {usd(spend)} spend</span>}
+                    {adOn && w.compare && weekComplete && lastWeekComplete &&
+                      <Delta cur={div(spend, w.people)} prev={div(lastSpend, lastWeekPeople)} kind="count" better="down" label="cost per registrant" />}
                   </div>
                 </div>
               </div>
@@ -297,12 +322,13 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
       <section>
         <h2>Webinar <span className="muted small">· {held.length} session{held.length === 1 ? "" : "s"} held · {periodLabel}</span></h2>
-        <div className="grid g5">
-          <Card n={4} title="Attendance rate" value={pct(attendees, regsWithZoom)}
-            sub={`${num(attendees)} of ${num(regsWithZoom)} registrants`}
-            help="People who joined the Zoom webinar ÷ people registered for that session." state={needZoom}
+        <div className="grid g3">
+          <Card n={4} title="Attendance rate" value={pct(attendees, regsWithAtt)}
+            sub={`${num(attendees)} of ${num(regsWithAtt)} registrants${attFromTracker ? " · show-ups from the team's tracker sheet" : ""}`}
+            help="People who showed up ÷ people registered for that webinar. From Zoom when connected, otherwise the show-ups the team enters in the tracker sheet."
+            state={withAtt.length ? {} : { needs: "Zoom" }}
             delta={<Delta cur={cur.attendance} prev={prev.attendance} kind="rate" label={vsLabel} />} />
-          <Card n={5} title={`Stayed to pitch`} value={pct(sum(withZoom, "stayed_to_pitch"), attendees)}
+          <Card n={5} title={`Stayed to pitch`} value={pct(sum(withZoom, "stayed_to_pitch"), zoomAttendees)}
             sub={`still on at ${PITCH_MINUTE} min`}
             help={`Attendees still in the webinar ${PITCH_MINUTE} minutes after it started ÷ attendees.`} state={needZoom}
             delta={<Delta cur={cur.stayed} prev={prev.stayed} kind="rate" label={vsLabel} />} />
@@ -314,7 +340,13 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             sub="cash collected, net of refunds"
             help="Whop cash from buyers attributed to these sessions."
             delta={<Delta cur={cur.cash} prev={prev.cash} kind="count" label={vsLabel} />} />
-          <Card n={8} title="Attendee → buyer" value={pct(sum(withZoom, "attendee_buyers"), attendees)}
+          <div className="card metric" title="The $97 lead magnet sold on the webinar, as the team records it in the tracker sheet (it is processed in an account this dashboard cannot reach). Not included in $ from webinar.">
+            <div className="metric-head"><span className="metric-title">$97 lead-magnet sales</span></div>
+            <div className="metric-value">{usd(cur.lmCash)}</div>
+            <Delta cur={cur.lmCash} prev={prev.lmCash} kind="count" label={vsLabel} />
+            <div className="metric-sub">{num(sum(held, "lm_purchases"))} sales · from the team&apos;s tracker sheet</div>
+          </div>
+          <Card n={8} title="Attendee → buyer" value={pct(sum(withZoom, "attendee_buyers"), zoomAttendees)}
             sub="webinar conversion rate"
             help="Attendees who bought ÷ attendees." state={needZoom}
             delta={<Delta cur={cur.attBuyer} prev={prev.attBuyer} kind="rate" label={vsLabel} />} />
@@ -394,21 +426,22 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             <thead>
               <tr>
                 <th>Session</th><th>Registrants</th><th>Spend</th><th>Cost/reg</th><th>Attended</th><th>Stayed</th>
-                <th>Buyers</th><th>Cash</th><th>Onboarding attended</th><th>HT cash</th><th>PIF</th>
+                <th>Buyers</th><th>Cash</th><th>$97 sales</th><th>Onboarding attended</th><th>HT cash</th><th>PIF</th>
               </tr>
             </thead>
             <tbody>
-              {held.length === 0 && <tr><td colSpan={11} className="muted">No sessions in this range.</td></tr>}
+              {held.length === 0 && <tr><td colSpan={12} className="muted">No sessions in this range.</td></tr>}
               {held.map((s) => (
                 <tr key={s.session_at.toISOString()}>
                   <td>{sessionLabel(s.session_at)}</td>
                   <td>{num(s.registrants)}</td>
-                  <td>{metaOn ? usd(s.ad_spend) : "—"}</td>
-                  <td>{metaOn ? usd(div(s.ad_spend, s.registrants), 2) : "—"}</td>
+                  <td>{adOn && spendComplete(s.reg_rows, s.covered_rows) ? usd(s.ad_spend) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
+                  <td>{adOn && spendComplete(s.reg_rows, s.covered_rows) ? usd(div(s.ad_spend, s.registrants), 2) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
                   <td>{s.attendees === null ? "—" : `${num(s.attendees)} · ${pct(s.attendees, s.registrants)}`}</td>
                   <td>{s.stayed_to_pitch === null ? "—" : pct(s.stayed_to_pitch, s.attendees)}</td>
                   <td>{num(s.buyers)}</td>
                   <td>{usd(s.cash)}</td>
+                  <td>{s.lm_purchases ? `${num(s.lm_purchases)} · ${usd(s.lm_cash)}` : "—"}</td>
                   <td>{num(s.onb_attended)} <span className="muted small">/ {num(s.onb_booked)}</span></td>
                   <td>{usd(s.ht_cash)}</td>
                   <td>{pct(s.ht_pif, s.ht_purchases)}</td>
@@ -427,7 +460,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <li><b>Onboarding (9–12)</b> = Leap Welcome Calls, including reschedules. Attended = marked &quot;showed&quot; in GHL, otherwise taken from the call&apos;s Zoom report once Zoom is connected.</li>
           <li><b>High ticket</b> = Ignite and Mastermind offers. <b>Cash</b> = Whop payments net of refunds; failed checkouts never count.</li>
           <li><b>Paid in full</b> = card/PayPal, all within 7 days of the first payment (deposit + balance counts). <b>Financing</b> = any part through Sezzle, Klarna, Afterpay, ClarityPay or Splitit. <b>Plan</b> = Whop splits it in-house.</li>
-          <li><b>Stayed to pitch</b> = still in the Zoom webinar {PITCH_MINUTE} minutes after it started.</li>
+          <li><b>Attendance</b> = people who showed up ÷ people registered. From Zoom once connected; until then the show-ups the team enters in its tracker sheet. <b>Stayed to pitch</b> = still in the Zoom webinar {PITCH_MINUTE} minutes after it started (Zoom only).</li>
+          <li><b>Ad spend</b> = Facebook spend on the webinar campaigns: from Meta once connected, until then the tracker sheet's FB Stats (Standout campaigns). <b>$97 lead-magnet sales</b> come from the tracker sheet and are not part of $ from webinar.</li>
         </ul>
       </details>
 

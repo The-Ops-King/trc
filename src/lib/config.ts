@@ -38,5 +38,12 @@ export const EXCLUDED_WHOP_PAYMENT_IDS: ReadonlyArray<{ id: string; reason: stri
   { id: "pay_tivmsXmWjpAFxC", reason: "$25 Ignite charge on an archived plan (2026-08-07), looks like a checkout test" },
 ];
 
+/**
+ * The team's tracker sheet ("Tiffany Rose LEAP - 2026", the live one), read daily and never written to. Link-shared, so no key.
+ * FB Stats → daily webinar ad spend (the "Tiffany Rose Standout" block); monthly tabs → show-ups and $97 lead-magnet sales per
+ * webinar. Meta and Zoom take over spend and attendance once connected.
+ */
+export const TRACKER_SHEET_ID = "1o9qEtbcv17A9UIy_Km4Nn6StjBgPISvSrf7NPbXExKQ";
+
 /** Display timezone for dates on the dashboard. */
 export const DISPLAY_TZ = "America/Los_Angeles";

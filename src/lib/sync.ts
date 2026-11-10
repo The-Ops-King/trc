@@ -2,7 +2,8 @@ import "server-only";
 import type postgres from "postgres";
 import { db } from "./db";
 import { env } from "./env";
-import { BACKFILL_START, CALENDARS, EXCLUDED_WHOP_PAYMENT_IDS, REGISTRATION_FORMS, SESSION_FIELD_IDS } from "./config";
+import { BACKFILL_START, CALENDARS, EXCLUDED_WHOP_PAYMENT_IDS, REGISTRATION_FORMS, SESSION_FIELD_IDS, TRACKER_SHEET_ID } from "./config";
+import * as sheet from "./sheet";
 import { parseSessionLabel } from "./session";
 import * as ghl from "./ghl";
 import * as whop from "./whop";
@@ -338,6 +339,45 @@ async function syncZoom(c: Ctx, creds: zoom.ZoomCreds): Promise<Result> {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The team's tracker sheet: webinar ad spend, show-ups, $97 lead-magnet sales
+// ---------------------------------------------------------------------------
+async function syncTrackerSheet(c: Ctx, sheetId: string): Promise<Result> {
+  const tabs = await sheet.listTabs(sheetId);
+
+  const fbGid = tabs.get("FB Stats");
+  if (!fbGid) throw new Error('tracker sheet: no "FB Stats" tab');
+  const ad = sheet.parseFbStats(await sheet.fetchTab(sheetId, fbGid, "FB Stats"));
+  if (ad.length) {
+    await c.sql`
+      insert into trc.sheet_ad_daily ${c.sql(ad.map((d) => ({ date: d.date, spend_usd: d.spend, link_clicks: d.linkClicks, impressions: d.impressions })))}
+      on conflict (date) do update set spend_usd = excluded.spend_usd, link_clicks = excluded.link_clicks,
+        impressions = excluded.impressions, synced_at = now()`;
+  }
+
+  // Every month from the backfill start to this month. A month's rows are replaced as a whole, so a number the team clears is
+  // cleared here too. A month whose tab does not exist yet is skipped.
+  const months: Array<{ year: number; month0: number; tab: string; days: number }> = [];
+  const [by, bm] = BACKFILL_START.split("-").map(Number) as [number, number];
+  const nowLa = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit" }).format(new Date());
+  const [ny, nm] = nowLa.split("-").map(Number) as [number, number];
+  for (let y = by, m0 = bm - 1; y < ny || (y === ny && m0 <= nm - 1); m0 === 11 ? (y++, m0 = 0) : m0++) {
+    const tab = sheet.monthTabName(y, m0), gid = tabs.get(tab);
+    if (!gid) { months.push({ year: y, month0: m0, tab, days: -1 }); continue; }
+    const days = sheet.parseMonthTab(await sheet.fetchTab(sheetId, gid, tab), y, m0);
+    const first = `${y}-${String(m0 + 1).padStart(2, "0")}-01`;
+    await c.sql.begin(async (tx) => {
+      await tx`delete from trc.sheet_webinar_day where date >= ${first}::date and date < (${first}::date + interval '1 month')`;
+      if (days.length) {
+        await tx`insert into trc.sheet_webinar_day ${tx(days.map((d) => ({ date: d.date, show_ups: d.showUps, lm_purchases: d.purchases, lm_cash: d.cash })))}`;
+      }
+    });
+    months.push({ year: y, month0: m0, tab, days: days.length });
+  }
+  const lastSpend = ad.reduce((m, d) => (d.date > m ? d.date : m), "");
+  return { ok: true, detail: { adDays: ad.length, lastSpendDay: lastSpend || null, webinarDays: Object.fromEntries(months.map((x) => [x.tab, x.days < 0 ? "no tab" : x.days])) } };
+}
+
 export async function runSync(trigger: "cron" | "manual", budgetMs = 270_000) {
   const sql = db();
   const c: Ctx = { sql, deadline: Date.now() + budgetMs };
@@ -361,6 +401,7 @@ export async function runSync(trigger: "cron" | "manual", budgetMs = 270_000) {
   await step("ghl_appointments", g, () => syncAppointments(c, g!));
   await step("whop_payments", w, () => syncWhop(c, w!.key));
   await step("meta_ads", m, () => syncMeta(c, m!));
+  await step("tracker_sheet", TRACKER_SHEET_ID, () => syncTrackerSheet(c, TRACKER_SHEET_ID));
   // Zoom runs last: it matches against registrations and appointments synced above.
   await step("zoom", z, () => syncZoom(c, z!));
 
