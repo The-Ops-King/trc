@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { safeEqual } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { db, poolerMode } from "@/lib/db";
 import { lastSuccessfulSync, lastSync, periodFunnel, periodTotals, registrantsByWebinarDay, sessionMetrics } from "@/lib/metrics";
 
 export const maxDuration = 300;
@@ -36,7 +36,7 @@ export async function GET(request: Request) {
       Promise.allSettled(steps.map(([step, run]) => { const s0 = Date.now(); return run().then(() => ({ step, ms: Date.now() - s0 })); })),
       new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 40_000)),
     ]);
-    return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, parallel: true, totalMs: Date.now() - t0,
+    return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, pooler: poolerMode(), parallel: true, totalMs: Date.now() - t0,
       result: settled === "timeout" ? "no answer within 40s" : settled.map((x) => (x.status === "fulfilled" ? x.value : { error: String(x.reason) })) });
   }
   for (const [step, run] of steps) {
@@ -49,5 +49,5 @@ export async function GET(request: Request) {
       out.push({ step, ms: Date.now() - t0, ok: false, note: err instanceof Error ? err.message : String(err) });
     } finally { clearTimeout(timer); }
   }
-  return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, days, steps: out });
+  return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, pooler: poolerMode(), days, steps: out });
 }
