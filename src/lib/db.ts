@@ -20,7 +20,10 @@ export function db(): postgres.Sql {
   if (!globalForDb.trcSql) {
     globalForDb.trcSql = postgres(transactionPoolerUrl(env.databaseUrl()), {
       prepare: false, // the transaction pooler does not support prepared statements
-      max: 5,
+      // One connection per server instance. A second connection opened alongside the first waited in Supabase's pooler and never
+      // answered (2026-11-10: alone each query took milliseconds; together the page hung). One connection runs the page's queries
+      // back to back in well under a second.
+      max: 1,
       idle_timeout: 20,
       // fail in 10s instead of hanging when the database cannot be reached (the page has 60s in all)
       connect_timeout: 10,
