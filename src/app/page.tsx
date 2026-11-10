@@ -103,10 +103,13 @@ function Delta({ cur, prev, kind, better = "up", label }: { cur: number | null; 
   return <div className={`delta ${better === "neither" ? "neutral" : good ? "good" : "bad"}`}>{arrow} {text} <span className="muted">· {label}</span></div>;
 }
 
-export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string }> }) {
+export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string; cmp?: string }> }) {
   if (!(await hasSession())) redirect("/login");
   const sp = await searchParams;
   const days = RANGES.includes(Number(sp.days) as (typeof RANGES)[number]) ? Number(sp.days) : 30;
+  // This week's webinars compare against last week's at the same point in time (default) or last week's final numbers.
+  const cmp: "point" | "final" = sp.cmp === "final" ? "final" : "point";
+  const link = (o: { days?: number; cmp?: string }) => `/?days=${o.days ?? days}${(o.cmp ?? cmp) === "final" ? "&cmp=final" : ""}`;
   const now = new Date();
   // Whole Pacific days: this period is the last `days` days including today; the previous period is the `days` days before it.
   const startOfLaDay = (ymd: string) => { const [y, m, d] = ymd.split("-").map(Number) as [number, number, number]; return laWallTimeToUtc(y, m - 1, d, 0, 0); };
@@ -186,7 +189,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           </div>
           <nav className="seg row" style={{ gap: 0 }} aria-label="Date range">
             {RANGES.map((r) => (
-              <a key={r} href={`/?days=${r}`} className={r === days ? "active" : ""}>{r === 7 ? "7 days" : `${r} days`}</a>
+              <a key={r} href={link({ days: r })} className={r === days ? "active" : ""}>{r === 7 ? "7 days" : `${r} days`}</a>
             ))}
           </nav>
         </div>
@@ -220,7 +223,16 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           const lastSpend = lastWeek.reduce((t, x) => t + (Number(x.ad_spend) || 0), 0);
           return (
             <div key={w.label} className="week">
-              <h3>{w.label} <span className="muted small">· {w.range}</span></h3>
+              <div className="row spread week-head">
+                <h3>{w.label} <span className="muted small">· {w.range}</span></h3>
+                {w.compare && (
+                  <nav className="seg small-seg" aria-label="Compare this week with">
+                    <span className="muted small">Compare with</span>
+                    <a href={link({ cmp: "point" })} className={cmp === "point" ? "active" : ""}>Same point last week</a>
+                    <a href={link({ cmp: "final" })} className={cmp === "final" ? "active" : ""}>Last week&apos;s final</a>
+                  </nav>
+                )}
+              </div>
               <div className={`grid ${w.sessions.length + 1 >= 4 ? "g4" : "g3"}`}>
                 {w.sessions.length === 0 && <div className="card metric"><div className="metric-title">No webinars this week</div></div>}
                 {w.sessions.map((x) => {
@@ -234,8 +246,11 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                         <span className={`state ${state}`}>{state === "today" ? "today" : state === "upcoming" ? "upcoming" : "held"}</span>
                       </div>
                       <div className="metric-value">{num(x.registrants)}<span className="unit"> registrants{state !== "held" ? " so far" : ""}</span></div>
-                      {w.compare && ago && <Delta cur={x.registrants} prev={lastWeekAsOf.bySession.find((y) => +y.session_at === +ago.session_at)?.registrants ?? 0} kind="count"
-                        label={`vs ${shortDate(ago.session_at)} at this point last week`} />}
+                      {w.compare && ago && (() => {
+                        const ref = cmp === "final" ? ago.registrants : (lastWeekAsOf.bySession.find((y) => +y.session_at === +ago.session_at)?.registrants ?? 0);
+                        return <Delta cur={x.registrants} prev={ref} kind="count"
+                          label={cmp === "final" ? `vs ${num(ref)} final for ${shortDate(ago.session_at)}` : `vs ${num(ref)} for ${shortDate(ago.session_at)} at this point last week`} />;
+                      })()}
                       <div className="metric-sub">
                         {metaOn ? <span><b className="strong">{usd(div(x.ad_spend, x.registrants), 2)}</b> per registrant · {usd(x.ad_spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
                         {metaOn && w.compare && ago && <Delta cur={div(x.ad_spend, x.registrants)} prev={div(ago.ad_spend, ago.registrants)} kind="count" better="down" label="cost per registrant" />}
@@ -246,7 +261,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                 <div className="card metric total" title="Unique people registered for any of this week's webinars: someone in both counts once, so this can be less than the cards added up.">
                   <div className="metric-head"><span className="tag">2</span><span className="metric-title">{w.label} total</span></div>
                   <div className="metric-value">{num(w.people)}<span className="unit"> registrants</span></div>
-                  {w.compare && <Delta cur={w.people} prev={lastWeekAsOf.total} kind="count" label="vs last week at this point" />}
+                  {w.compare && (() => {
+                    const ref = cmp === "final" ? lastWeekPeople : lastWeekAsOf.total;
+                    return <Delta cur={w.people} prev={ref} kind="count" label={cmp === "final" ? `vs ${num(ref)} last week (final)` : `vs ${num(ref)} last week at this point`} />;
+                  })()}
                   <div className="metric-sub">
                     {metaOn ? <span><b className="strong">{usd(div(spend, w.people), 2)}</b> per registrant · {usd(spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
                     {metaOn && w.compare && <Delta cur={div(spend, w.people)} prev={div(lastSpend, lastWeekPeople)} kind="count" better="down" label="cost per registrant" />}

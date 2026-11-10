@@ -153,3 +153,11 @@ ul.defs b { color: var(--text); }
 .state { margin-left: auto; font: 600 10px var(--sans); letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
 .state.today { background: var(--gold-fill); border-color: var(--gold-fill); color: #2a2110; }
 .state.upcoming { color: var(--gold); border-color: var(--gold-dim); }
+.week-head { margin-bottom: 8px; }
+.week-head h3 { margin: 0; }
+.small-seg { align-items: center; }
+.small-seg .muted { border: none; padding: 0 8px 0 0; background: none; }
+.small-seg a { font-size: 12px; padding: 4px 10px; }
+.small-seg a:nth-of-type(1) { border-radius: 6px 0 0 6px; border-left: 1px solid var(--border); }
+.small-seg a:last-child { border-radius: 0 6px 6px 0; }
+@media (max-width: 640px) { .week .grid { grid-template-columns: 1fr; } .week-head { gap: 8px; } }
