@@ -148,3 +148,8 @@ ul.defs b { color: var(--text); }
 .delta.bad { color: var(--bad); }
 .delta.flat { color: var(--muted); font-weight: 400; }
 .delta.neutral { color: var(--text); }
+.week { margin-top: 14px; }
+.week h3 { margin: 0 0 8px; font: 600 13px var(--sans); color: var(--text); }
+.state { margin-left: auto; font: 600 10px var(--sans); letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.state.today { background: var(--gold-fill); border-color: var(--gold-fill); color: #2a2110; }
+.state.upcoming { color: var(--gold); border-color: var(--gold-dim); }

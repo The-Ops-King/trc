@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { safeEqual } from "@/lib/auth";
 import { db, poolerMode } from "@/lib/db";
-import { lastSuccessfulSync, lastSync, loadDashboard, periodFunnel, periodTotals, registrantsByWebinarDay, sessionMetrics } from "@/lib/metrics";
+import { lastSuccessfulSync, lastSync, loadDashboard, periodFunnel, periodTotals, sessionMetrics } from "@/lib/metrics";
 
 export const maxDuration = 300;
 
@@ -24,7 +24,6 @@ export async function GET(request: Request) {
     ["periodTotals", () => periodTotals(from, now)],
     ["periodFunnel", () => periodFunnel(from, now)],
     ["sessionMetrics", () => sessionMetrics(from, now)],
-    ["registrantsByWebinarDay", () => registrantsByWebinarDay(from, now)],
     ["lastSync", () => lastSync()],
     ["lastSuccessfulSync", () => lastSuccessfulSync()],
   ];
@@ -35,7 +34,7 @@ export async function GET(request: Request) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        loadDashboard(from, now, new Date(from.getTime() - days * 86_400_000), new Date(now.getTime() + 14 * 86_400_000), (l, ms) => { timings[l] = ms; }),
+        loadDashboard(from, now, new Date(from.getTime() - days * 86_400_000), new Date(now.getTime() + 14 * 86_400_000), { lastMon: new Date(now.getTime() - 14 * 86_400_000), thisMon: new Date(now.getTime() - 7 * 86_400_000), nextMon: new Date(now.getTime() + 7 * 86_400_000) }, (l, ms) => { timings[l] = ms; }),
         new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("no answer within 40s")), 40_000); }),
       ]);
       return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, pooler: poolerMode(), page: true, ok: true, totalMs: Date.now() - t0, timings });

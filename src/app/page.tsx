@@ -6,7 +6,7 @@ import {
 } from "@/lib/metrics";
 import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } from "@/lib/format";
 import { laWallTimeToUtc } from "@/lib/session";
-import { laDay, type PeriodFunnel, type PeriodTotals, type WebinarDayRow } from "@/lib/metrics";
+import { laDay, type PeriodFunnel, type PeriodTotals } from "@/lib/metrics";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -15,6 +15,14 @@ const RANGES = [7, 30, 60, 90] as const;
 const DAY = 86_400_000;
 /** Show a warning when the last successful sync is older than this. */
 const STALE_AFTER_MS = 36 * 60 * 60 * 1000;
+
+const fmt = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", ...o });
+/** "Tue, Nov 10 · 9 AM" */
+const sessionDay = (d: Date) => `${fmt({ weekday: "short", month: "short", day: "numeric" }).format(d)} · ${fmt({ hour: "numeric", minute: "2-digit" }).format(d).replace(":00", "")}`;
+/** "Nov 3" */
+const shortDate = (d: Date) => fmt({ weekday: "short", month: "short", day: "numeric" }).format(d);
+/** "Nov 9" from a YYYY-MM-DD Pacific day */
+const shortDay = (ymd: string) => new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric" }).format(new Date(`${ymd}T12:00:00Z`));
 
 /** Give up well before Vercel's 60s limit, so a stalled database shows a message instead of a timeout page. */
 const PAGE_DEADLINE_MS = 25_000;
@@ -55,8 +63,7 @@ function sum<K extends keyof SessionRow>(rows: SessionRow[], k: K): number {
 }
 
 /** Every number on a card, from one period's data, so this period and the one before are computed the same way. */
-function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[], byDay: WebinarDayRow[]) {
-  const row = (d: string) => byDay.find((r) => r.day === d) ?? { day: d, registrants: 0, ad_spend: 0 };
+function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[]) {
   const z = held.filter((s) => s.attendees !== null);
   const att = sum(z, "attendees");
   const known = f.onb_booked - f.onb_unknown;
@@ -64,11 +71,6 @@ function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[], byDay: We
   return {
     adSpend: t.ad_spend,
     regRate: rate(t.registrants, t.landing_page_views),
-    regs: { tuesday: row("tuesday").registrants, thursday: row("thursday").registrants, other: row("other").registrants, total: row("total").registrants },
-    cpr: {
-      tuesday: rate(row("tuesday").ad_spend, row("tuesday").registrants), thursday: rate(row("thursday").ad_spend, row("thursday").registrants),
-      other: rate(row("other").ad_spend, row("other").registrants), total: rate(row("total").ad_spend, row("total").registrants),
-    },
     attendance: z.length ? rate(att, sum(z, "registrants")) : null,
     stayed: z.length ? rate(sum(z, "stayed_to_pitch"), att) : null,
     buyers: sum(held, "buyers"),
@@ -113,11 +115,16 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const from = startOfLaDay(shiftDays(today, -(days - 1)));
   const prevFrom = startOfLaDay(shiftDays(today, -(2 * days - 1)));
   const vsLabel = `vs previous ${days} days`;
+  // Weeks run Monday to Sunday, Pacific.
+  const isoDow = ((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7) + 1;
+  const thisMonYmd = shiftDays(today, -(isoDow - 1));
+  const weeks = { lastMon: startOfLaDay(shiftDays(thisMonYmd, -7)), thisMon: startOfLaDay(thisMonYmd), nextMon: startOfLaDay(shiftDays(thisMonYmd, 7)) };
+  const weekRange = (monYmd: string) => `${shortDay(monYmd)} – ${shortDay(shiftDays(monYmd, 6))}`;
 
   let data;
   try {
     data = await withDeadline(
-      loadDashboard(from, now, prevFrom, new Date(now.getTime() + 14 * DAY), (label, ms) => {
+      loadDashboard(from, now, prevFrom, new Date(now.getTime() + 14 * DAY), weeks, (label, ms) => {
         if (ms > 2000) console.warn(`[dashboard] slow query ${label}: ${ms}ms`);
       }),
       PAGE_DEADLINE_MS,
@@ -133,14 +140,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
       </main>
     );
   }
-  const [totals, funnel, sessions, sync, lastOk, byDay, pTotals, pFunnel, pSessions, pByDay] = data;
-  const dayRow = (d: string) => byDay.find((r) => r.day === d) ?? { day: d, registrants: 0, ad_spend: 0 };
-  const webinarDays = [
-    { key: "tuesday", title: "Tuesday webinar", row: dayRow("tuesday") },
-    { key: "thursday", title: "Thursday webinar", row: dayRow("thursday") },
-    ...(dayRow("other").registrants ? [{ key: "other", title: "Other days", row: dayRow("other") }] : []),
-    { key: "total", title: "Total (cost per registrant)", row: dayRow("total") },
-  ];
+  const { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf } = data;
 
   const metaOn = !!env.meta();
   const zoomOn = !!env.zoom();
@@ -149,9 +149,20 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
   // Webinar numbers (4-8) are per session: sessions held in the selected window.
   const held = sessions.filter((s) => s.session_at <= now);
-  const cur = figures(totals, funnel, held, byDay);
-  const prev = figures(pTotals, pFunnel, pSessions, pByDay);
+  const cur = figures(totals, funnel, held);
+  const prev = figures(pTotals, pFunnel, pSessions);
   const upcoming = sessions.filter((s) => s.session_at > now).reverse();
+  // This week's and last week's webinars, each by its own date.
+  const inWeek = (start: Date, end: Date) => weekSessions.filter((x) => x.session_at >= start && x.session_at < end).slice().sort((a, b) => +a.session_at - +b.session_at);
+  const thisWeek = inWeek(weeks.thisMon, weeks.nextMon), lastWeek = inWeek(weeks.lastMon, weeks.thisMon);
+  const weekday = (d: Date) => fmt({ weekday: "short" }).format(d);
+  // the same weekday last week (by Pacific weekday, so a daylight-saving change in between does not break the match)
+  const sameDayLastWeek = (x: SessionRow) => lastWeek.find((y) => weekday(y.session_at) === weekday(x.session_at)) ?? null;
+  const weekRows = [
+    { label: "This week", range: weekRange(thisMonYmd), sessions: thisWeek, people: thisWeekPeople, compare: true },
+    { label: "Last week", range: weekRange(shiftDays(thisMonYmd, -7)), sessions: lastWeek, people: lastWeekPeople, compare: false },
+  ];
+
   const withZoom = held.filter((s) => s.attendees !== null);
   const regsHeld = sum(held, "registrants");
   const attendees = sum(withZoom, "attendees");
@@ -204,20 +215,47 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             help="Registrants ÷ Meta landing page views." state={needMeta}
             delta={<Delta cur={cur.regRate} prev={prev.regRate} kind="rate" label={vsLabel} />} />
         </div>
-        <div className={`grid ${webinarDays.length === 4 ? "g4" : "g3"}`} style={{ marginTop: 10 }}>
-          {webinarDays.map(({ key, title, row }) => (
-            <div key={key} className={`card metric${key === "total" ? " total" : ""}`}
-              title="People who registered in the period for this webinar day (once per webinar day; the total counts a person once even if they registered for both). Cost per registrant: each day's Meta spend split across that day's registrations; the total uses all spend in the period.">
-              <div className="metric-head"><span className="tag">2</span><span className="metric-title">{title}</span></div>
-              <div className="metric-value">{num(row.registrants)}<span className="unit"> registrants</span></div>
-              <Delta cur={cur.regs[key as keyof typeof cur.regs]} prev={prev.regs[key as keyof typeof prev.regs]} kind="count" label={vsLabel} />
-              <div className="metric-sub">
-                {metaOn ? <span><b className="strong">{usd(div(row.ad_spend, row.registrants), 2)}</b> per registrant · {usd(row.ad_spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
-                {metaOn && <Delta cur={cur.cpr[key as keyof typeof cur.cpr]} prev={prev.cpr[key as keyof typeof prev.cpr]} kind="count" better="down" label="cost per registrant" />}
+        {weekRows.map((w) => {
+          const spend = w.sessions.reduce((t, x) => t + (Number(x.ad_spend) || 0), 0);
+          const lastSpend = lastWeek.reduce((t, x) => t + (Number(x.ad_spend) || 0), 0);
+          return (
+            <div key={w.label} className="week">
+              <h3>{w.label} <span className="muted small">· {w.range}</span></h3>
+              <div className={`grid ${w.sessions.length + 1 >= 4 ? "g4" : "g3"}`}>
+                {w.sessions.length === 0 && <div className="card metric"><div className="metric-title">No webinars this week</div></div>}
+                {w.sessions.map((x) => {
+                  const ago = sameDayLastWeek(x);
+                  const state = x.session_at > now ? (laDay(x.session_at) === today ? "today" : "upcoming") : (laDay(x.session_at) === today ? "today" : "held");
+                  return (
+                    <div key={x.session_at.toISOString()} className="card metric"
+                      title="Unique people registered for this webinar (all registrations, whenever they signed up). Cost per registrant: Meta spend on the days they signed up, split across that day's registrations.">
+                      <div className="metric-head">
+                        <span className="tag">2</span><span className="metric-title">{sessionDay(x.session_at)}</span>
+                        <span className={`state ${state}`}>{state === "today" ? "today" : state === "upcoming" ? "upcoming" : "held"}</span>
+                      </div>
+                      <div className="metric-value">{num(x.registrants)}<span className="unit"> registrants{state !== "held" ? " so far" : ""}</span></div>
+                      {w.compare && ago && <Delta cur={x.registrants} prev={lastWeekAsOf.bySession.find((y) => +y.session_at === +ago.session_at)?.registrants ?? 0} kind="count"
+                        label={`vs ${shortDate(ago.session_at)} at this point last week`} />}
+                      <div className="metric-sub">
+                        {metaOn ? <span><b className="strong">{usd(div(x.ad_spend, x.registrants), 2)}</b> per registrant · {usd(x.ad_spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
+                        {metaOn && w.compare && ago && <Delta cur={div(x.ad_spend, x.registrants)} prev={div(ago.ad_spend, ago.registrants)} kind="count" better="down" label="cost per registrant" />}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="card metric total" title="Unique people registered for any of this week's webinars: someone in both counts once, so this can be less than the cards added up.">
+                  <div className="metric-head"><span className="tag">2</span><span className="metric-title">{w.label} total</span></div>
+                  <div className="metric-value">{num(w.people)}<span className="unit"> registrants</span></div>
+                  {w.compare && <Delta cur={w.people} prev={lastWeekAsOf.total} kind="count" label="vs last week at this point" />}
+                  <div className="metric-sub">
+                    {metaOn ? <span><b className="strong">{usd(div(spend, w.people), 2)}</b> per registrant · {usd(spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
+                    {metaOn && w.compare && <Delta cur={div(spend, w.people)} prev={div(lastSpend, lastWeekPeople)} kind="count" better="down" label="cost per registrant" />}
+                  </div>
+                </div>
               </div>
             </div>
-          ))}
-        </div>
+          );
+        })}
       </section>
 
       <section>

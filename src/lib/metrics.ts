@@ -232,34 +232,13 @@ export async function periodFunnel(from: Date, to: Date): Promise<PeriodFunnel> 
   return row!;
 }
 
-export type WebinarDayRow = { day: "tuesday" | "thursday" | "other" | "total"; registrants: number; ad_spend: number };
-
-/**
- * Registrants in [from, to] (whole Pacific days by registration date, today included) split by the weekday of the webinar they picked, with ad spend for each.
- * Each day's Meta spend is split across that day's registrations, so a webinar's spend is the share of spend on the days its
- * registrants signed up; the parts add up to the spend on every day that had a registration. Registrants are unique people
- * per webinar day; the total counts a person once even if they registered for both.
- */
-export async function registrantsByWebinarDay(from: Date, to: Date): Promise<WebinarDayRow[]> {
+/** Unique people registered for any webinar session that starts in [from, to) (someone in both of a week's webinars counts once). */
+export async function sessionRegistrants(from: Date, to: Date): Promise<number> {
   const sql = db();
-  const [f, t] = [laDay(from), lastDay(to)];
-  return sql<WebinarDayRow[]>`
-    with reg as (
-      select (created_at at time zone 'America/Los_Angeles')::date as d,
-             case extract(isodow from session_at at time zone 'America/Los_Angeles')
-               when 2 then 'tuesday' when 4 then 'thursday' else 'other' end as day,
-             lower(email) as e
-      from trc.registrations
-      where (created_at at time zone 'America/Los_Angeles')::date between ${f}::date and ${t}::date
-        and session_at is not null and email is not null
-    ),
-    day_n as (select d, count(*)::numeric as n from reg group by d),
-    meta_day as (select date as d, sum(spend_usd) as spend from trc.meta_daily where date between ${f}::date and ${t}::date group by date),
-    per_row as (select reg.day, reg.e, coalesce(md.spend, 0) / dn.n as spend from reg join day_n dn using (d) left join meta_day md using (d))
-    select day, count(distinct e)::int as registrants, coalesce(sum(spend), 0) as ad_spend from per_row group by day
-    union all
-    -- the total is all spend in the window, so it always equals the Ad spend card
-    select 'total', (select count(distinct e)::int from reg), (select coalesce(sum(spend), 0) from meta_day)`;
+  const [r] = await sql<Array<{ n: number }>>`
+    select count(distinct lower(email))::int as n from trc.registrations
+    where session_at >= ${from} and session_at < ${to} and email is not null`;
+  return r?.n ?? 0;
 }
 
 /** The last Pacific day inside a half-open window [from, to): the day of the instant just before `to`. */
@@ -283,12 +262,31 @@ export async function lastSync() {
   return row ?? null;
 }
 
+export type WeekBounds = { lastMon: Date; thisMon: Date; nextMon: Date };
+
+/**
+ * Registrants for each webinar starting in [from, to), counting only sign-ups made by `asOf`, plus the unique total. Used to compare
+ * this week with last week at the same point in time: last week's webinars as of exactly seven days ago.
+ */
+export async function registrantsAsOf(from: Date, to: Date, asOf: Date): Promise<{ bySession: Array<{ session_at: Date; registrants: number }>; total: number }> {
+  const sql = db();
+  const bySession = await sql<Array<{ session_at: Date; registrants: number }>>`
+    select session_at, count(distinct lower(email))::int as registrants from trc.registrations
+    where session_at >= ${from} and session_at < ${to} and created_at <= ${asOf} and email is not null
+    group by session_at`;
+  const [t] = await sql<Array<{ n: number }>>`
+    select count(distinct lower(email))::int as n from trc.registrations
+    where session_at >= ${from} and session_at < ${to} and created_at <= ${asOf} and email is not null`;
+  return { bySession, total: t?.n ?? 0 };
+}
+
 /**
  * Everything the dashboard page shows, loaded one query at a time. Supabase's pooler did not answer queries sent stacked on one
  * another (2026-11-10: the page sent ten at once and hung; the same queries one after another take milliseconds each), so each
  * query waits for the one before. The diagnostic endpoint runs this same function.
  */
-export async function loadDashboard(from: Date, now: Date, prevFrom: Date, sessionsTo: Date, onStep?: (label: string, ms: number) => void) {
+
+export async function loadDashboard(from: Date, now: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void) {
   const step = async <T,>(label: string, run: () => Promise<T>): Promise<T> => {
     const t0 = Date.now();
     try { return await run(); } finally { onStep?.(label, Date.now() - t0); }
@@ -298,10 +296,13 @@ export async function loadDashboard(from: Date, now: Date, prevFrom: Date, sessi
   const sessions = await step("sessionMetrics", () => sessionMetrics(from, sessionsTo));
   const sync = await step("lastSync", () => lastSync());
   const lastOk = await step("lastSuccessfulSync", () => lastSuccessfulSync());
-  const byDay = await step("registrantsByWebinarDay", () => registrantsByWebinarDay(from, now));
   const pTotals = await step("prev.periodTotals", () => periodTotals(prevFrom, from));
   const pFunnel = await step("prev.periodFunnel", () => periodFunnel(prevFrom, from));
   const pSessions = await step("prev.sessionMetrics", () => sessionMetrics(prevFrom, from));
-  const pByDay = await step("prev.registrantsByWebinarDay", () => registrantsByWebinarDay(prevFrom, from));
-  return [totals, funnel, sessions, sync, lastOk, byDay, pTotals, pFunnel, pSessions, pByDay] as const;
+  // this week's and last week's webinars, each by its own date (Monday to Sunday, Pacific)
+  const weekSessions = await step("weeks.sessionMetrics", () => sessionMetrics(weeks.lastMon, weeks.nextMon));
+  const thisWeekPeople = await step("weeks.thisWeekPeople", () => sessionRegistrants(weeks.thisMon, weeks.nextMon));
+  const lastWeekPeople = await step("weeks.lastWeekPeople", () => sessionRegistrants(weeks.lastMon, weeks.thisMon));
+  const lastWeekAsOf = await step("weeks.lastWeekAsOf", () => registrantsAsOf(weeks.lastMon, weeks.thisMon, new Date(now.getTime() - 7 * 86_400_000)));
+  return { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf };
 }
