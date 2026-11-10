@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { hasSession } from "@/lib/guard";
 import { env } from "@/lib/env";
 import {
-  lastSuccessfulSync, lastSync, periodFunnel, periodTotals, sessionMetrics, PITCH_MINUTE, type SessionRow,
+  lastSuccessfulSync, lastSync, periodFunnel, periodTotals, registrantsByWebinarDay, sessionMetrics, PITCH_MINUTE, type SessionRow,
 } from "@/lib/metrics";
 import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } from "@/lib/format";
 
@@ -46,13 +46,21 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const now = new Date();
   const from = new Date(now.getTime() - days * DAY);
 
-  const [totals, funnel, sessions, sync, lastOk] = await Promise.all([
+  const [totals, funnel, sessions, sync, lastOk, byDay] = await Promise.all([
     periodTotals(from, now),
     periodFunnel(from, now),
     sessionMetrics(from, new Date(now.getTime() + 14 * DAY)),
     lastSync(),
     lastSuccessfulSync(),
+    registrantsByWebinarDay(from, now),
   ]);
+  const dayRow = (d: string) => byDay.find((r) => r.day === d) ?? { day: d, registrants: 0, ad_spend: 0 };
+  const webinarDays = [
+    { key: "tuesday", title: "Tuesday webinar", row: dayRow("tuesday") },
+    { key: "thursday", title: "Thursday webinar", row: dayRow("thursday") },
+    ...(dayRow("other").registrants ? [{ key: "other", title: "Other days", row: dayRow("other") }] : []),
+    { key: "total", title: "Total (cost per registrant)", row: dayRow("total") },
+  ];
 
   const metaOn = !!env.meta();
   const zoomOn = !!env.zoom();
@@ -105,15 +113,24 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
       <section>
         <h2>Ads <span className="muted small">· last {days} days</span></h2>
-        <div className="grid g3">
+        <div className="grid g2">
           <Card n={1} title="Ad spend" value={usd(totals.ad_spend)} sub="Meta Ads, all webinar campaigns"
             help="Total Meta Ads spend in the selected period." state={needMeta} />
-          <Card n={2} title="Cost per registrant" value={usd(div(totals.ad_spend, totals.registrants), 2)}
-            sub={`${num(totals.registrants)} people registered`}
-            help="Ad spend ÷ unique people who registered for a webinar in the period." state={needMeta} />
           <Card n={3} title="Registration rate" value={pct(totals.registrants, totals.landing_page_views)}
-            sub={`${num(totals.landing_page_views)} landing page views`}
+            sub={`${num(totals.registrants)} registrants · ${num(totals.landing_page_views)} landing page views`}
             help="Registrants ÷ Meta landing page views." state={needMeta} />
+        </div>
+        <div className={`grid ${webinarDays.length === 4 ? "g4" : "g3"}`} style={{ marginTop: 10 }}>
+          {webinarDays.map(({ key, title, row }) => (
+            <div key={key} className={`card metric${key === "total" ? " total" : ""}`}
+              title="People who registered in the period for this webinar day (once per webinar day; the total counts a person once even if they registered for both). Cost per registrant: each day's Meta spend split across that day's registrations; the total uses all spend in the period.">
+              <div className="metric-head"><span className="tag">2</span><span className="metric-title">{title}</span></div>
+              <div className="metric-value">{num(row.registrants)}<span className="unit"> registrants</span></div>
+              <div className="metric-sub">
+                {metaOn ? <span><b className="strong">{usd(div(row.ad_spend, row.registrants), 2)}</b> per registrant · {usd(row.ad_spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 

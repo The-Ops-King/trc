@@ -137,3 +137,8 @@ ul.defs b { color: var(--text); }
 .login input:focus { outline: 2px solid var(--gold-fill); border-color: var(--gold-dim); }
 .login button { width: 100%; padding: 11px; }
 .login .err { color: var(--bad); font: 13px var(--sans); }
+.metric.total { border-color: var(--gold-dim); background: linear-gradient(180deg, #fffaf0, #fff); }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 400px) { .g2 { grid-template-columns: 1fr; } }
+.metric-value .unit { font: 500 13px var(--sans); color: var(--muted); margin-left: 6px; }
+.metric-sub .strong { color: var(--text); font-size: 14px; }

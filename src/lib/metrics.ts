@@ -152,14 +152,11 @@ export async function periodTotals(from: Date, to: Date): Promise<PeriodTotals> 
   const sql = db();
   const [base] = await sql<Array<Omit<PeriodTotals, "by_group" | "failed">>>`
     select
-      (select coalesce(sum(spend_usd), 0) from trc.meta_daily
-        where date >= (${from}::timestamptz at time zone 'America/Los_Angeles')::date
-          and date < (${to}::timestamptz at time zone 'America/Los_Angeles')::date) as ad_spend,
-      (select coalesce(sum(landing_page_views), 0)::int from trc.meta_daily
-        where date >= (${from}::timestamptz at time zone 'America/Los_Angeles')::date
-          and date < (${to}::timestamptz at time zone 'America/Los_Angeles')::date) as landing_page_views,
+      (select coalesce(sum(spend_usd), 0) from trc.meta_daily where date between ${laDay(from)}::date and ${laDay(to)}::date) as ad_spend,
+      (select coalesce(sum(landing_page_views), 0)::int from trc.meta_daily where date between ${laDay(from)}::date and ${laDay(to)}::date) as landing_page_views,
       (select count(distinct lower(email))::int from trc.registrations
-        where created_at >= ${from} and created_at < ${to} and email is not null) as registrants,
+        where (created_at at time zone 'America/Los_Angeles')::date between ${laDay(from)}::date and ${laDay(to)}::date
+          and email is not null) as registrants,
       (select coalesce(sum(net_usd), 0) from trc.paid_payments where paid_at >= ${from} and paid_at < ${to}) as cash_all,
       (select coalesce(sum(p.net_usd), 0) from trc.paid_payments p
         where p.paid_at >= ${from} and p.paid_at < ${to}
@@ -233,6 +230,41 @@ export async function periodFunnel(from: Date, to: Date): Promise<PeriodFunnel> 
       (select count(*) filter (where payment_type = 'third_party_financing')::int from ht) as ht_financing,
       (select count(*) filter (where payment_type = 'payment_plan')::int from ht) as ht_plan`;
   return row!;
+}
+
+export type WebinarDayRow = { day: "tuesday" | "thursday" | "other" | "total"; registrants: number; ad_spend: number };
+
+/**
+ * Registrants in [from, to] (whole Pacific days by registration date, today included) split by the weekday of the webinar they picked, with ad spend for each.
+ * Each day's Meta spend is split across that day's registrations, so a webinar's spend is the share of spend on the days its
+ * registrants signed up; the parts add up to the spend on every day that had a registration. Registrants are unique people
+ * per webinar day; the total counts a person once even if they registered for both.
+ */
+export async function registrantsByWebinarDay(from: Date, to: Date): Promise<WebinarDayRow[]> {
+  const sql = db();
+  const [f, t] = [laDay(from), laDay(to)];
+  return sql<WebinarDayRow[]>`
+    with reg as (
+      select (created_at at time zone 'America/Los_Angeles')::date as d,
+             case extract(isodow from session_at at time zone 'America/Los_Angeles')
+               when 2 then 'tuesday' when 4 then 'thursday' else 'other' end as day,
+             lower(email) as e
+      from trc.registrations
+      where (created_at at time zone 'America/Los_Angeles')::date between ${f}::date and ${t}::date
+        and session_at is not null and email is not null
+    ),
+    day_n as (select d, count(*)::numeric as n from reg group by d),
+    meta_day as (select date as d, sum(spend_usd) as spend from trc.meta_daily where date between ${f}::date and ${t}::date group by date),
+    per_row as (select reg.day, reg.e, coalesce(md.spend, 0) / dn.n as spend from reg join day_n dn using (d) left join meta_day md using (d))
+    select day, count(distinct e)::int as registrants, coalesce(sum(spend), 0) as ad_spend from per_row group by day
+    union all
+    -- the total is all spend in the window, so it always equals the Ad spend card
+    select 'total', (select count(distinct e)::int from reg), (select coalesce(sum(spend), 0) from meta_day)`;
+}
+
+/** A Date as its calendar day in Los Angeles (YYYY-MM-DD): the dashboard's windows are whole Pacific days, today included. */
+export function laDay(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 }
 
 export async function lastSuccessfulSync(): Promise<Date | null> {
