@@ -161,3 +161,7 @@ ul.defs b { color: var(--text); }
 .small-seg a:nth-of-type(1) { border-radius: 6px 0 0 6px; border-left: 1px solid var(--border); }
 .small-seg a:last-child { border-radius: 0 6px 6px 0; }
 @media (max-width: 640px) { .week .grid { grid-template-columns: 1fr; } .week-head { gap: 8px; } }
+.range-form { display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.range-form.active { border-color: var(--gold-dim); background: #fffaf0; }
+.range-form input[type=date] { font: 13px var(--sans); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; background: #fff; color: var(--text); }
+.range-form button { padding: 4px 10px; font-size: 12px; }

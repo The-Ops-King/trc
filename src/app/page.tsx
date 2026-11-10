@@ -103,21 +103,33 @@ function Delta({ cur, prev, kind, better = "up", label }: { cur: number | null; 
   return <div className={`delta ${better === "neither" ? "neutral" : good ? "good" : "bad"}`}>{arrow} {text} <span className="muted">· {label}</span></div>;
 }
 
-export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string; cmp?: string }> }) {
+export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string; cmp?: string; from?: string; to?: string }> }) {
   if (!(await hasSession())) redirect("/login");
   const sp = await searchParams;
-  const days = RANGES.includes(Number(sp.days) as (typeof RANGES)[number]) ? Number(sp.days) : 30;
   // This week's webinars compare against last week's at the same point in time (default) or last week's final numbers.
   const cmp: "point" | "final" = sp.cmp === "final" ? "final" : "point";
-  const link = (o: { days?: number; cmp?: string }) => `/?days=${o.days ?? days}${(o.cmp ?? cmp) === "final" ? "&cmp=final" : ""}`;
   const now = new Date();
-  // Whole Pacific days: this period is the last `days` days including today; the previous period is the `days` days before it.
+  // Whole Pacific days. Preset: the last `days` days including today. Custom: from/to (YYYY-MM-DD, both included, not after today).
+  // The previous period is the same number of days just before.
   const startOfLaDay = (ymd: string) => { const [y, m, d] = ymd.split("-").map(Number) as [number, number, number]; return laWallTimeToUtc(y, m - 1, d, 0, 0); };
   const shiftDays = (ymd: string, n: number) => new Date(Date.UTC(...(ymd.split("-").map(Number) as [number, number, number]).map((v, i) => (i === 1 ? v - 1 : v)) as [number, number, number]) + n * DAY).toISOString().slice(0, 10);
+  const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / DAY);
   const today = laDay(now);
-  const from = startOfLaDay(shiftDays(today, -(days - 1)));
-  const prevFrom = startOfLaDay(shiftDays(today, -(2 * days - 1)));
-  const vsLabel = `vs previous ${days} days`;
+  const ymdOk = (v?: string) => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
+  const customTo = ymdOk(sp.to) && sp.to! <= today ? sp.to! : today;
+  const custom = ymdOk(sp.from) && sp.from! <= customTo && daysBetween(sp.from!, customTo) < 400 ? { from: sp.from!, to: customTo } : null;
+  const days = custom ? daysBetween(custom.from, custom.to) + 1 : RANGES.includes(Number(sp.days) as (typeof RANGES)[number]) ? Number(sp.days) : 30;
+  const fromYmd = custom ? custom.from : shiftDays(today, -(days - 1));
+  const toYmd = custom ? custom.to : today;
+  const from = startOfLaDay(fromYmd);
+  const to = toYmd === today ? now : startOfLaDay(shiftDays(toYmd, 1));
+  const prevFrom = startOfLaDay(shiftDays(fromYmd, -days));
+  const periodLabel = custom ? `${shortDay(fromYmd)} – ${shortDay(toYmd)}` : `last ${days} days`;
+  const vsLabel = `vs previous ${days} day${days === 1 ? "" : "s"}`;
+  const link = (o: { days?: number; cmp?: string; keepCustom?: boolean }) => {
+    const c = (o.cmp ?? cmp) === "final" ? "&cmp=final" : "";
+    return custom && o.keepCustom !== false && o.days === undefined ? `/?from=${custom.from}&to=${custom.to}${c}` : `/?days=${o.days ?? days}${c}`;
+  };
   // Weeks run Monday to Sunday, Pacific.
   const isoDow = ((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7) + 1;
   const thisMonYmd = shiftDays(today, -(isoDow - 1));
@@ -127,7 +139,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   let data;
   try {
     data = await withDeadline(
-      loadDashboard(from, now, prevFrom, new Date(now.getTime() + 14 * DAY), weeks, (label, ms) => {
+      loadDashboard(from, to, prevFrom, custom ? to : new Date(now.getTime() + 14 * DAY), weeks, (label, ms) => {
         if (ms > 2000) console.warn(`[dashboard] slow query ${label}: ${ms}ms`);
       }),
       PAGE_DEADLINE_MS,
@@ -151,10 +163,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const needZoom: CardState = zoomOn ? {} : { needs: "Zoom" };
 
   // Webinar numbers (4-8) are per session: sessions held in the selected window.
-  const held = sessions.filter((s) => s.session_at <= now);
+  const held = sessions.filter((s) => s.session_at <= now && s.session_at < to);
   const cur = figures(totals, funnel, held);
   const prev = figures(pTotals, pFunnel, pSessions);
-  const upcoming = sessions.filter((s) => s.session_at > now).reverse();
+  const upcoming = custom ? [] : sessions.filter((s) => s.session_at > now).reverse();
   // This week's and last week's webinars, each by its own date.
   const inWeek = (start: Date, end: Date) => weekSessions.filter((x) => x.session_at >= start && x.session_at < end).slice().sort((a, b) => +a.session_at - +b.session_at);
   const thisWeek = inWeek(weeks.thisMon, weeks.nextMon), lastWeek = inWeek(weeks.lastMon, weeks.thisMon);
@@ -189,9 +201,16 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           </div>
           <nav className="seg row" style={{ gap: 0 }} aria-label="Date range">
             {RANGES.map((r) => (
-              <a key={r} href={link({ days: r })} className={r === days ? "active" : ""}>{r === 7 ? "7 days" : `${r} days`}</a>
+              <a key={r} href={link({ days: r })} className={!custom && r === days ? "active" : ""}>{r === 7 ? "7 days" : `${r} days`}</a>
             ))}
           </nav>
+          <form method="get" action="/" className={`range-form${custom ? " active" : ""}`} aria-label="Custom dates">
+            <input type="date" name="from" defaultValue={fromYmd} max={today} required aria-label="From" />
+            <span className="muted small">to</span>
+            <input type="date" name="to" defaultValue={toYmd} max={today} required aria-label="To" />
+            {cmp === "final" && <input type="hidden" name="cmp" value="final" />}
+            <button type="submit">Apply</button>
+          </form>
         </div>
         <div className="row">
           <span className="small muted">{lastOk ? `Updated ${dateTime(lastOk)}` : "Not synced yet"}</span>
@@ -208,7 +227,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
       )}
 
       <section>
-        <h2>Ads <span className="muted small">· last {days} days</span></h2>
+        <h2>Ads <span className="muted small">· {periodLabel}</span></h2>
         <div className="grid g2">
           <Card n={1} title="Ad spend" value={usd(totals.ad_spend)} sub="Meta Ads, all webinar campaigns"
             help="Total Meta Ads spend in the selected period." state={needMeta}
@@ -277,7 +296,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
       </section>
 
       <section>
-        <h2>Webinar <span className="muted small">· {held.length} session{held.length === 1 ? "" : "s"} held in the last {days} days</span></h2>
+        <h2>Webinar <span className="muted small">· {held.length} session{held.length === 1 ? "" : "s"} held · {periodLabel}</span></h2>
         <div className="grid g5">
           <Card n={4} title="Attendance rate" value={pct(attendees, regsWithZoom)}
             sub={`${num(attendees)} of ${num(regsWithZoom)} registrants`}
@@ -303,7 +322,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
       </section>
 
       <section>
-        <h2>Onboarding calls <span className="muted small">· Leap Welcome Calls in the last {days} days</span></h2>
+        <h2>Onboarding calls <span className="muted small">· Leap Welcome Calls · {periodLabel}</span></h2>
         <div className="grid g4">
           <Card n={9} title="Calls attended" value={num(funnel.onb_attended)}
             sub={`of ${num(funnel.onb_booked)} booked`}
@@ -328,7 +347,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
       </section>
 
       <section>
-        <h2>Cash <span className="muted small">· last {days} days</span></h2>
+        <h2>Cash <span className="muted small">· {periodLabel}</span></h2>
         <div className="grid g4">
           <Card n={13} title="High-ticket cash collected" value={usd(funnel.ht_cash)}
             sub={`Ignite + Mastermind · all Whop ${usd(totals.cash_all)}`}

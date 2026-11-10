@@ -286,13 +286,13 @@ export async function registrantsAsOf(from: Date, to: Date, asOf: Date): Promise
  * query waits for the one before. The diagnostic endpoint runs this same function.
  */
 
-export async function loadDashboard(from: Date, now: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void) {
+export async function loadDashboard(from: Date, to: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void) {
   const step = async <T,>(label: string, run: () => Promise<T>): Promise<T> => {
     const t0 = Date.now();
     try { return await run(); } finally { onStep?.(label, Date.now() - t0); }
   };
-  const totals = await step("periodTotals", () => periodTotals(from, now));
-  const funnel = await step("periodFunnel", () => periodFunnel(from, now));
+  const totals = await step("periodTotals", () => periodTotals(from, to));
+  const funnel = await step("periodFunnel", () => periodFunnel(from, to));
   const sessions = await step("sessionMetrics", () => sessionMetrics(from, sessionsTo));
   const sync = await step("lastSync", () => lastSync());
   const lastOk = await step("lastSuccessfulSync", () => lastSuccessfulSync());
@@ -303,6 +303,6 @@ export async function loadDashboard(from: Date, now: Date, prevFrom: Date, sessi
   const weekSessions = await step("weeks.sessionMetrics", () => sessionMetrics(weeks.lastMon, weeks.nextMon));
   const thisWeekPeople = await step("weeks.thisWeekPeople", () => sessionRegistrants(weeks.thisMon, weeks.nextMon));
   const lastWeekPeople = await step("weeks.lastWeekPeople", () => sessionRegistrants(weeks.lastMon, weeks.thisMon));
-  const lastWeekAsOf = await step("weeks.lastWeekAsOf", () => registrantsAsOf(weeks.lastMon, weeks.thisMon, new Date(now.getTime() - 7 * 86_400_000)));
+  const lastWeekAsOf = await step("weeks.lastWeekAsOf", () => registrantsAsOf(weeks.lastMon, weeks.thisMon, new Date(Date.now() - 7 * 86_400_000)));
   return { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf };
 }
