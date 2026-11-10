@@ -29,6 +29,16 @@ export async function GET(request: Request) {
     ["lastSuccessfulSync", () => lastSuccessfulSync()],
   ];
   const out: Array<{ step: string; ms: number; ok: boolean; note?: string }> = [];
+  if (new URL(request.url).searchParams.get("parallel") === "1") {
+    // as the page does it: everything at once
+    const t0 = Date.now();
+    const settled = await Promise.race([
+      Promise.allSettled(steps.map(([step, run]) => { const s0 = Date.now(); return run().then(() => ({ step, ms: Date.now() - s0 })); })),
+      new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 40_000)),
+    ]);
+    return NextResponse.json({ region: process.env.VERCEL_REGION ?? null, parallel: true, totalMs: Date.now() - t0,
+      result: settled === "timeout" ? "no answer within 40s" : settled.map((x) => (x.status === "fulfilled" ? x.value : { error: String(x.reason) })) });
+  }
   for (const [step, run] of steps) {
     const t0 = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
