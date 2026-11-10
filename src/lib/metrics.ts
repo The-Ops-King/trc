@@ -152,10 +152,10 @@ export async function periodTotals(from: Date, to: Date): Promise<PeriodTotals> 
   const sql = db();
   const [base] = await sql<Array<Omit<PeriodTotals, "by_group" | "failed">>>`
     select
-      (select coalesce(sum(spend_usd), 0) from trc.meta_daily where date between ${laDay(from)}::date and ${laDay(to)}::date) as ad_spend,
-      (select coalesce(sum(landing_page_views), 0)::int from trc.meta_daily where date between ${laDay(from)}::date and ${laDay(to)}::date) as landing_page_views,
+      (select coalesce(sum(spend_usd), 0) from trc.meta_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as ad_spend,
+      (select coalesce(sum(landing_page_views), 0)::int from trc.meta_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as landing_page_views,
       (select count(distinct lower(email))::int from trc.registrations
-        where (created_at at time zone 'America/Los_Angeles')::date between ${laDay(from)}::date and ${laDay(to)}::date
+        where (created_at at time zone 'America/Los_Angeles')::date between ${laDay(from)}::date and ${lastDay(to)}::date
           and email is not null) as registrants,
       (select coalesce(sum(net_usd), 0) from trc.paid_payments where paid_at >= ${from} and paid_at < ${to}) as cash_all,
       (select coalesce(sum(p.net_usd), 0) from trc.paid_payments p
@@ -242,7 +242,7 @@ export type WebinarDayRow = { day: "tuesday" | "thursday" | "other" | "total"; r
  */
 export async function registrantsByWebinarDay(from: Date, to: Date): Promise<WebinarDayRow[]> {
   const sql = db();
-  const [f, t] = [laDay(from), laDay(to)];
+  const [f, t] = [laDay(from), lastDay(to)];
   return sql<WebinarDayRow[]>`
     with reg as (
       select (created_at at time zone 'America/Los_Angeles')::date as d,
@@ -261,6 +261,9 @@ export async function registrantsByWebinarDay(from: Date, to: Date): Promise<Web
     -- the total is all spend in the window, so it always equals the Ad spend card
     select 'total', (select count(distinct e)::int from reg), (select coalesce(sum(spend), 0) from meta_day)`;
 }
+
+/** The last Pacific day inside a half-open window [from, to): the day of the instant just before `to`. */
+const lastDay = (to: Date) => laDay(new Date(to.getTime() - 1));
 
 /** A Date as its calendar day in Los Angeles (YYYY-MM-DD): the dashboard's windows are whole Pacific days, today included. */
 export function laDay(d: Date): string {

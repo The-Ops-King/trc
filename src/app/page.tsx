@@ -5,6 +5,8 @@ import {
   lastSuccessfulSync, lastSync, periodFunnel, periodTotals, registrantsByWebinarDay, sessionMetrics, PITCH_MINUTE, type SessionRow,
 } from "@/lib/metrics";
 import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } from "@/lib/format";
+import { laWallTimeToUtc } from "@/lib/session";
+import { laDay, type PeriodFunnel, type PeriodTotals, type WebinarDayRow } from "@/lib/metrics";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -14,10 +16,28 @@ const DAY = 86_400_000;
 /** Show a warning when the last successful sync is older than this. */
 const STALE_AFTER_MS = 36 * 60 * 60 * 1000;
 
+/** Give up well before Vercel's 60s limit, so a stalled database shows a message instead of a timeout page. */
+const PAGE_DEADLINE_MS = 25_000;
+
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p.finally(() => clearTimeout(timer)),
+    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer within ${ms / 1000}s`)), ms); }),
+  ]);
+}
+
+/** Logs how long each query took (Vercel runtime logs), so the next slow load names its slow step. */
+async function timed<T>(label: string, p: Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  try { return await p; }
+  finally { const ms = Date.now() - t0; if (ms > 2000) console.warn(`[dashboard] slow query ${label}: ${ms}ms`); }
+}
+
 type CardState = { needs?: string; warn?: string };
 
-function Card({ n, title, value, sub, help, state = {} }: {
-  n: number; title: string; value: string; sub?: string; help: string; state?: CardState;
+function Card({ n, title, value, sub, help, state = {}, delta }: {
+  n: number; title: string; value: string; sub?: string; help: string; state?: CardState; delta?: React.ReactNode;
 }) {
   const blocked = !!state.needs;
   return (
@@ -27,6 +47,7 @@ function Card({ n, title, value, sub, help, state = {} }: {
         <span className="metric-title">{title}</span>
       </div>
       <div className="metric-value">{blocked ? "—" : value}</div>
+      {!blocked && delta}
       <div className="metric-sub">
         {blocked ? <span className="pill">Connect {state.needs}</span> : sub}
         {!blocked && state.warn && <span className="pill warn">{state.warn}</span>}
@@ -39,21 +60,92 @@ function sum<K extends keyof SessionRow>(rows: SessionRow[], k: K): number {
   return rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
 }
 
+/** Every number on a card, from one period's data, so this period and the one before are computed the same way. */
+function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[], byDay: WebinarDayRow[]) {
+  const row = (d: string) => byDay.find((r) => r.day === d) ?? { day: d, registrants: 0, ad_spend: 0 };
+  const z = held.filter((s) => s.attendees !== null);
+  const att = sum(z, "attendees");
+  const known = f.onb_booked - f.onb_unknown;
+  const rate = (a: number, b: number) => (b ? a / b : null);
+  return {
+    adSpend: t.ad_spend,
+    regRate: rate(t.registrants, t.landing_page_views),
+    regs: { tuesday: row("tuesday").registrants, thursday: row("thursday").registrants, other: row("other").registrants, total: row("total").registrants },
+    cpr: {
+      tuesday: rate(row("tuesday").ad_spend, row("tuesday").registrants), thursday: rate(row("thursday").ad_spend, row("thursday").registrants),
+      other: rate(row("other").ad_spend, row("other").registrants), total: rate(row("total").ad_spend, row("total").registrants),
+    },
+    attendance: z.length ? rate(att, sum(z, "registrants")) : null,
+    stayed: z.length ? rate(sum(z, "stayed_to_pitch"), att) : null,
+    buyers: sum(held, "buyers"),
+    cash: sum(held, "cash"),
+    attBuyer: z.length ? rate(sum(z, "attendee_buyers"), att) : null,
+    onbAttended: f.onb_attended,
+    showRate: known > 0 ? f.onb_attended / known : null,
+    htFromCalls: f.ht_after_onb_attended,
+    callToHt: rate(f.ht_after_onb_attended, f.onb_attended),
+    htCash: f.ht_cash,
+    pif: rate(f.ht_pif, f.ht_purchases),
+    failed: t.failed.people,
+  };
+}
+
+/**
+ * Change against the previous period of the same length. Counts and dollars: % change. Rates: percentage points, since a %
+ * change of a % is easy to misread. `better` says which way is good (green) for this number.
+ */
+function Delta({ cur, prev, kind, better = "up", label }: { cur: number | null; prev: number | null; kind: "count" | "rate"; better?: "up" | "down" | "neither"; label: string }) {
+  if (cur === null || prev === null) return <div className="delta flat">no comparison · {label}</div>;
+  const diff = cur - prev;
+  if (Math.abs(diff) < 1e-9) return <div className="delta flat">no change · {label}</div>;
+  const good = (diff > 0) === (better === "up");
+  const arrow = diff > 0 ? "▲" : "▼";
+  let text: string;
+  if (kind === "rate") text = `${diff > 0 ? "+" : "−"}${Math.abs(diff * 100).toFixed(1)} pts`;
+  else if (prev === 0) text = "new";
+  else text = `${diff > 0 ? "+" : "−"}${Math.abs((diff / prev) * 100).toFixed(1)}%`;
+  return <div className={`delta ${better === "neither" ? "neutral" : good ? "good" : "bad"}`}>{arrow} {text} <span className="muted">· {label}</span></div>;
+}
+
 export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string }> }) {
   if (!(await hasSession())) redirect("/login");
   const sp = await searchParams;
   const days = RANGES.includes(Number(sp.days) as (typeof RANGES)[number]) ? Number(sp.days) : 30;
   const now = new Date();
-  const from = new Date(now.getTime() - days * DAY);
+  // Whole Pacific days: this period is the last `days` days including today; the previous period is the `days` days before it.
+  const startOfLaDay = (ymd: string) => { const [y, m, d] = ymd.split("-").map(Number) as [number, number, number]; return laWallTimeToUtc(y, m - 1, d, 0, 0); };
+  const shiftDays = (ymd: string, n: number) => new Date(Date.UTC(...(ymd.split("-").map(Number) as [number, number, number]).map((v, i) => (i === 1 ? v - 1 : v)) as [number, number, number]) + n * DAY).toISOString().slice(0, 10);
+  const today = laDay(now);
+  const from = startOfLaDay(shiftDays(today, -(days - 1)));
+  const prevFrom = startOfLaDay(shiftDays(today, -(2 * days - 1)));
+  const vsLabel = `vs previous ${days} days`;
 
-  const [totals, funnel, sessions, sync, lastOk, byDay] = await Promise.all([
-    periodTotals(from, now),
-    periodFunnel(from, now),
-    sessionMetrics(from, new Date(now.getTime() + 14 * DAY)),
-    lastSync(),
-    lastSuccessfulSync(),
-    registrantsByWebinarDay(from, now),
-  ]);
+  let data;
+  try {
+    data = await withDeadline(Promise.all([
+      timed("periodTotals", periodTotals(from, now)),
+      timed("periodFunnel", periodFunnel(from, now)),
+      timed("sessionMetrics", sessionMetrics(from, new Date(now.getTime() + 14 * DAY))),
+      timed("lastSync", lastSync()),
+      timed("lastSuccessfulSync", lastSuccessfulSync()),
+      timed("registrantsByWebinarDay", registrantsByWebinarDay(from, now)),
+      timed("prev.periodTotals", periodTotals(prevFrom, from)),
+      timed("prev.periodFunnel", periodFunnel(prevFrom, from)),
+      timed("prev.sessionMetrics", sessionMetrics(prevFrom, from)),
+      timed("prev.registrantsByWebinarDay", registrantsByWebinarDay(prevFrom, from)),
+    ]), PAGE_DEADLINE_MS);
+  } catch (err) {
+    console.error(`[dashboard] page data failed: ${err instanceof Error ? err.message : String(err)}`);
+    return (
+      <main>
+        <div className="notice err">
+          <b>The dashboard couldn&apos;t load its numbers.</b> The database didn&apos;t answer in time. Refresh in a minute; if it keeps
+          happening, the cause is in the Vercel logs under &quot;[dashboard]&quot;.
+        </div>
+      </main>
+    );
+  }
+  const [totals, funnel, sessions, sync, lastOk, byDay, pTotals, pFunnel, pSessions, pByDay] = data;
   const dayRow = (d: string) => byDay.find((r) => r.day === d) ?? { day: d, registrants: 0, ad_spend: 0 };
   const webinarDays = [
     { key: "tuesday", title: "Tuesday webinar", row: dayRow("tuesday") },
@@ -69,6 +161,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
   // Webinar numbers (4-8) are per session: sessions held in the selected window.
   const held = sessions.filter((s) => s.session_at <= now);
+  const cur = figures(totals, funnel, held, byDay);
+  const prev = figures(pTotals, pFunnel, pSessions, pByDay);
   const upcoming = sessions.filter((s) => s.session_at > now).reverse();
   const withZoom = held.filter((s) => s.attendees !== null);
   const regsHeld = sum(held, "registrants");
@@ -115,10 +209,12 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         <h2>Ads <span className="muted small">· last {days} days</span></h2>
         <div className="grid g2">
           <Card n={1} title="Ad spend" value={usd(totals.ad_spend)} sub="Meta Ads, all webinar campaigns"
-            help="Total Meta Ads spend in the selected period." state={needMeta} />
+            help="Total Meta Ads spend in the selected period." state={needMeta}
+            delta={<Delta cur={cur.adSpend} prev={prev.adSpend} kind="count" better="neither" label={vsLabel} />} />
           <Card n={3} title="Registration rate" value={pct(totals.registrants, totals.landing_page_views)}
             sub={`${num(totals.registrants)} registrants · ${num(totals.landing_page_views)} landing page views`}
-            help="Registrants ÷ Meta landing page views." state={needMeta} />
+            help="Registrants ÷ Meta landing page views." state={needMeta}
+            delta={<Delta cur={cur.regRate} prev={prev.regRate} kind="rate" label={vsLabel} />} />
         </div>
         <div className={`grid ${webinarDays.length === 4 ? "g4" : "g3"}`} style={{ marginTop: 10 }}>
           {webinarDays.map(({ key, title, row }) => (
@@ -126,8 +222,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
               title="People who registered in the period for this webinar day (once per webinar day; the total counts a person once even if they registered for both). Cost per registrant: each day's Meta spend split across that day's registrations; the total uses all spend in the period.">
               <div className="metric-head"><span className="tag">2</span><span className="metric-title">{title}</span></div>
               <div className="metric-value">{num(row.registrants)}<span className="unit"> registrants</span></div>
+              <Delta cur={cur.regs[key as keyof typeof cur.regs]} prev={prev.regs[key as keyof typeof prev.regs]} kind="count" label={vsLabel} />
               <div className="metric-sub">
                 {metaOn ? <span><b className="strong">{usd(div(row.ad_spend, row.registrants), 2)}</b> per registrant · {usd(row.ad_spend)} spend</span> : <span className="pill">Cost per registrant: connect Meta Ads</span>}
+                {metaOn && <Delta cur={cur.cpr[key as keyof typeof cur.cpr]} prev={prev.cpr[key as keyof typeof prev.cpr]} kind="count" better="down" label="cost per registrant" />}
               </div>
             </div>
           ))}
@@ -139,19 +237,24 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         <div className="grid g5">
           <Card n={4} title="Attendance rate" value={pct(attendees, regsWithZoom)}
             sub={`${num(attendees)} of ${num(regsWithZoom)} registrants`}
-            help="People who joined the Zoom webinar ÷ people registered for that session." state={needZoom} />
+            help="People who joined the Zoom webinar ÷ people registered for that session." state={needZoom}
+            delta={<Delta cur={cur.attendance} prev={prev.attendance} kind="rate" label={vsLabel} />} />
           <Card n={5} title={`Stayed to pitch`} value={pct(sum(withZoom, "stayed_to_pitch"), attendees)}
             sub={`still on at ${PITCH_MINUTE} min`}
-            help={`Attendees still in the webinar ${PITCH_MINUTE} minutes after it started ÷ attendees.`} state={needZoom} />
+            help={`Attendees still in the webinar ${PITCH_MINUTE} minutes after it started ÷ attendees.`} state={needZoom}
+            delta={<Delta cur={cur.stayed} prev={prev.stayed} kind="rate" label={vsLabel} />} />
           <Card n={6} title="Buyers from webinar" value={num(sum(held, "buyers"))}
             sub={`of ${num(regsHeld)} registrations`}
-            help="People who bought on Whop after registering for one of these sessions." />
+            help="People who bought on Whop after registering for one of these sessions."
+            delta={<Delta cur={cur.buyers} prev={prev.buyers} kind="count" label={vsLabel} />} />
           <Card n={7} title="$ from webinar" value={usd(sum(held, "cash"))}
             sub="cash collected, net of refunds"
-            help="Whop cash from buyers attributed to these sessions." />
+            help="Whop cash from buyers attributed to these sessions."
+            delta={<Delta cur={cur.cash} prev={prev.cash} kind="count" label={vsLabel} />} />
           <Card n={8} title="Attendee → buyer" value={pct(sum(withZoom, "attendee_buyers"), attendees)}
             sub="webinar conversion rate"
-            help="Attendees who bought ÷ attendees." state={needZoom} />
+            help="Attendees who bought ÷ attendees." state={needZoom}
+            delta={<Delta cur={cur.attBuyer} prev={prev.attBuyer} kind="rate" label={vsLabel} />} />
         </div>
       </section>
 
@@ -161,19 +264,22 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <Card n={9} title="Calls attended" value={num(funnel.onb_attended)}
             sub={`of ${num(funnel.onb_booked)} booked`}
             help="Onboarding calls where the person showed up (GHL 'showed' mark, or the Zoom report once connected)."
-            state={onbWarn} />
+            state={onbWarn} delta={<Delta cur={cur.onbAttended} prev={prev.onbAttended} kind="count" label={vsLabel} />} />
           <Card n={10} title="Show rate" value={onbKnown > 0 ? pct(funnel.onb_attended, onbKnown) : "—"}
             sub={onbKnown > 0 ? `of ${num(onbKnown)} calls with a known result` : "no results recorded yet"}
             help="Attended ÷ booked calls whose result is known."
             state={onbKnown < funnel.onb_unknown
               ? { warn: `Unreliable: only ${num(onbKnown)} of ${num(funnel.onb_booked)} calls have a result${zoomOn ? "" : " until Zoom is connected"}` }
-              : onbWarn} />
+              : onbWarn}
+            delta={<Delta cur={cur.showRate} prev={prev.showRate} kind="rate" label={vsLabel} />} />
           <Card n={11} title="High-ticket buyers from calls" value={num(funnel.ht_after_onb_attended)}
             sub={`of ${num(funnel.ht_buyers)} high-ticket buyers`}
-            help="Ignite or Mastermind buyers in the period who attended an onboarding call before paying." />
+            help="Ignite or Mastermind buyers in the period who attended an onboarding call before paying."
+            delta={<Delta cur={cur.htFromCalls} prev={prev.htFromCalls} kind="count" label={vsLabel} />} />
           <Card n={12} title="Call → high-ticket %" value={pct(funnel.ht_after_onb_attended, funnel.onb_attended)}
             sub="of attended calls"
-            help="High-ticket buyers who attended a call ÷ calls attended." />
+            help="High-ticket buyers who attended a call ÷ calls attended."
+            delta={<Delta cur={cur.callToHt} prev={prev.callToHt} kind="rate" label={vsLabel} />} />
         </div>
       </section>
 
@@ -182,13 +288,16 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         <div className="grid g4">
           <Card n={13} title="High-ticket cash collected" value={usd(funnel.ht_cash)}
             sub={`Ignite + Mastermind · all Whop ${usd(totals.cash_all)}`}
-            help="Whop cash for Ignite and Mastermind offers, net of refunds, by payment date." />
+            help="Whop cash for Ignite and Mastermind offers, net of refunds, by payment date."
+            delta={<Delta cur={cur.htCash} prev={prev.htCash} kind="count" label={vsLabel} />} />
           <Card n={14} title="Paid in full" value={pct(funnel.ht_pif, funnel.ht_purchases)}
             sub={`${num(funnel.ht_pif)} PIF · ${num(funnel.ht_financing)} financing · ${num(funnel.ht_plan)} plan`}
-            help="High-ticket purchases paid in full (card/PayPal within 7 days) ÷ all high-ticket purchases." />
+            help="High-ticket purchases paid in full (card/PayPal within 7 days) ÷ all high-ticket purchases."
+            delta={<Delta cur={cur.pif} prev={prev.pif} kind="rate" label={vsLabel} />} />
           <div className="card metric" title="Whop checkouts that failed or were abandoned. Each person counts once.">
             <div className="metric-head"><span className="metric-title">Failed / abandoned checkouts</span></div>
             <div className="metric-value">{num(totals.failed.people)}</div>
+            <Delta cur={cur.failed} prev={prev.failed} kind="count" better="down" label={vsLabel} />
             <div className="metric-sub">{usd(totals.failed.attempted_usd)} attempted · {num(totals.failed.recovered_people)} paid later</div>
           </div>
           <div className="card metric">

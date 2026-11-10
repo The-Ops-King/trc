@@ -142,3 +142,9 @@ ul.defs b { color: var(--text); }
 @media (max-width: 400px) { .g2 { grid-template-columns: 1fr; } }
 .metric-value .unit { font: 500 13px var(--sans); color: var(--muted); margin-left: 6px; }
 .metric-sub .strong { color: var(--text); font-size: 14px; }
+.delta { font: 600 12px var(--sans); margin-top: 2px; }
+.delta .muted { font-weight: 400; }
+.delta.good { color: #1f7a33; }
+.delta.bad { color: var(--bad); }
+.delta.flat { color: var(--muted); font-weight: 400; }
+.delta.neutral { color: var(--text); }

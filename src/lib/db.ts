@@ -12,6 +12,8 @@ export function db(): postgres.Sql {
       prepare: false,
       max: 5,
       idle_timeout: 20,
+      // fail in 10s instead of hanging when the database cannot be reached (the page has 60s in all)
+      connect_timeout: 10,
       onnotice: () => {},
       types: { numeric: { to: 1700, from: [1700], serialize: (x: number) => String(x), parse: (x: string) => Number(x) } },
     });
