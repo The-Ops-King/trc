@@ -43,6 +43,8 @@ export const env = {
     const clientSecret = read("ZOOM_CLIENT_SECRET");
     return accountId && clientId && clientSecret ? { accountId, clientId, clientSecret } : null;
   },
+  /** The Zoom "Webhook only" app's Secret Token: verifies Zoom's joined/left events (no Server-to-Server OAuth needed). */
+  zoomWebhookSecret: () => read("ZOOM_WEBHOOK_SECRET_TOKEN"),
   slackWebhookUrl: () => read("SLACK_WEBHOOK_URL"),
   dashboardUrl: () => read("DASHBOARD_URL") ?? "https://trc.jtylerray.com",
 };

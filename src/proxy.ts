@@ -12,6 +12,7 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Everything except static assets, the login flow and the cron endpoint (which uses CRON_SECRET).
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|logo.png|login|api/login|api/cron/).*)"],
+  // Everything except static assets, the login flow, the cron endpoints (CRON_SECRET) and the webhooks (each checks its sender's
+  // signature, e.g. Zoom's).
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|logo.png|login|api/login|api/cron/|api/webhooks/).*)"],
 };
