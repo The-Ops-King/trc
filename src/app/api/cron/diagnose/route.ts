@@ -20,7 +20,12 @@ export async function GET(request: Request) {
   const from = new Date(now.getTime() - days * 86_400_000);
   const steps: Array<[string, () => Promise<unknown>]> = [
     ["select 1", () => db()`select 1`],
-    ["row counts", () => db()`select (select count(*) from trc.registrations)::int as registrations, (select count(*) from trc.appointments)::int as appointments, (select count(*) from trc.whop_payments)::int as payments`],
+    ["row counts", () => db()`select (select count(*) from trc.registrations)::int as registrations, (select count(*) from trc.appointments)::int as appointments, (select count(*) from trc.whop_payments)::int as payments,
+      (select count(*) from trc.zoom_events)::int as zoom_events, (select max(received_at) from trc.zoom_events) as zoom_last_event,
+      (select json_agg(json_build_object('topic', topic, 'type', zoom_type, 'events', n, 'people', p, 'matched', kind)) from (
+        select e.instance_uuid, max(e.topic) as topic, max(e.zoom_type) as zoom_type, count(*) as n, count(distinct e.participant_key) as p, max(i.kind) as kind
+        from trc.zoom_events e left join trc.zoom_instances i on i.uuid = e.instance_uuid
+        group by e.instance_uuid order by max(e.received_at) desc limit 5) x) as zoom_recent`],
     ["periodTotals", () => periodTotals(from, now)],
     ["periodFunnel", () => periodFunnel(from, now)],
     ["sessionMetrics", () => sessionMetrics(from, now)],
