@@ -1,8 +1,9 @@
 import "server-only";
-import { db } from "./db";
+import { db, serial } from "./db";
+import { rebuildDirty } from "./zoom-webhook";
 
-/** Minutes after webinar start that count as "stayed until the pitch". */
-export const PITCH_MINUTE = 45;
+import { PITCH_MINUTE } from "./config";
+export { PITCH_MINUTE };
 
 export type SessionRow = {
   session_at: Date;
@@ -322,10 +323,17 @@ export async function registrantsAsOf(from: Date, to: Date, asOf: Date): Promise
  */
 
 export async function loadDashboard(from: Date, to: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void) {
+  // Runs queued behind any webhook work on this server (see serial in db.ts).
+  return serial(() => loadDashboardNow(from, to, prevFrom, sessionsTo, weeks, onStep));
+}
+
+async function loadDashboardNow(from: Date, to: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void) {
   const step = async <T,>(label: string, run: () => Promise<T>): Promise<T> => {
     const t0 = Date.now();
     try { return await run(); } finally { onStep?.(label, Date.now() - t0); }
   };
+  // attendance from Zoom events that came in since the last rebuild
+  await step("zoom.rebuildDirty", () => rebuildDirty(db(), 20));
   const totals = await step("periodTotals", () => periodTotals(from, to));
   const funnel = await step("periodFunnel", () => periodFunnel(from, to));
   const sessions = await step("sessionMetrics", () => sessionMetrics(from, sessionsTo));

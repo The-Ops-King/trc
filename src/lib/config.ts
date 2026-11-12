@@ -45,5 +45,8 @@ export const EXCLUDED_WHOP_PAYMENT_IDS: ReadonlyArray<{ id: string; reason: stri
  */
 export const TRACKER_SHEET_ID = "1o9qEtbcv17A9UIy_Km4Nn6StjBgPISvSrf7NPbXExKQ";
 
+/** Minutes after webinar start that count as "stayed until the pitch". */
+export const PITCH_MINUTE = 45;
+
 /** Display timezone for dates on the dashboard. */
 export const DISPLAY_TZ = "America/Los_Angeles";

@@ -1,6 +1,6 @@
 import "server-only";
 import type postgres from "postgres";
-import { PITCH_MINUTE } from "./metrics";
+import { PITCH_MINUTE } from "./config";
 export { eventRow, urlValidationAnswer, zoomSignatureOk } from "./zoom-webhook-core";
 
 // Turning stored Zoom joined/left events into attendance per instance (the webhook itself is in zoom-webhook-core.ts).
@@ -14,10 +14,17 @@ const MATCH_BEFORE_MS = 30 * 60_000, MATCH_AFTER_MS = 90 * 60_000, CALL_MATCH_MS
  * time) or an onboarding call (by meeting number in the call's Zoom link and start time). Unmatched instances are left alone.
  */
 export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): Promise<"webinar" | "onboarding" | "unmatched"> {
-  const evs = await sql<Array<{ event: string; zoom_type: "meeting" | "webinar"; zoom_id: string; topic: string | null; instance_start: Date | null; participant_key: string; email: string | null; name: string | null; at: Date }>>`
-    select event, zoom_type, zoom_id, topic, instance_start, participant_key, email, name, at from trc.zoom_events
+  const evs = await sql<Array<{ id: number; event: string; zoom_type: "meeting" | "webinar"; zoom_id: string; topic: string | null; instance_start: Date | null; participant_key: string; email: string | null; name: string | null; at: Date }>>`
+    select id::int as id, event, zoom_type, zoom_id, topic, instance_start, participant_key, email, name, at from trc.zoom_events
     where instance_uuid = ${instanceUuid} order by at, id`;
   if (!evs.length) return "unmatched";
+  const through = evs.reduce((m, e) => Math.max(m, e.id), 0);
+  const unmatched = async () => {
+    await sql`
+      insert into trc.zoom_unmatched (instance_uuid, rebuilt_through) values (${instanceUuid}, ${through})
+      on conflict (instance_uuid) do update set rebuilt_through = excluded.rebuilt_through, checked_at = now()`;
+    return "unmatched" as const;
+  };
   const first = evs[0]!;
   const start = first.instance_start ?? evs.reduce((m, e) => (e.at < m ? e.at : m), first.at);
   const lastSeen = evs.at(-1)!.at;
@@ -32,11 +39,11 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
     where kind = 'onboarding' and meeting_url like ${"%" + first.zoom_id + "%"}
       and start_at between ${new Date(start.getTime() - CALL_MATCH_MS)} and ${new Date(start.getTime() + CALL_MATCH_MS)}
     order by abs(extract(epoch from start_at - ${start}::timestamptz)) limit 1`;
-  if (!session && !call) return "unmatched";
+  if (!session && !call) return unmatched();
   if (session && first.zoom_type === "meeting") {
     // a Zoom Webinar already matched to this session wins: another meeting that happened to start then is not the webinar
     const [webinar] = await sql`select 1 from trc.zoom_instances where session_at = ${session.session_at} and kind = 'webinar' and zoom_type = 'webinar' limit 1`;
-    if (webinar) return "unmatched";
+    if (webinar) return unmatched();
   }
 
   const people = new Map<string, { email: string | null; name: string | null; first: number; last: number; ms: number; open: number | null }>();
@@ -61,11 +68,12 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
 
   await sql.begin(async (tx) => {
     await tx`
-      insert into trc.zoom_instances (uuid, zoom_id, zoom_type, kind, topic, start_at, session_at, appointment_id, participants_fetched)
+      insert into trc.zoom_instances (uuid, zoom_id, zoom_type, kind, topic, start_at, session_at, appointment_id, participants_fetched, rebuilt_through)
       values (${instanceUuid}, ${first.zoom_id}, ${first.zoom_type}, ${session ? "webinar" : "onboarding"}, ${first.topic}, ${start},
-              ${session?.session_at ?? null}, ${call?.id ?? null}, true)
+              ${session?.session_at ?? null}, ${call?.id ?? null}, true, ${through})
       on conflict (uuid) do update set session_at = excluded.session_at, appointment_id = excluded.appointment_id,
-        start_at = excluded.start_at, participants_fetched = true, synced_at = now()`;
+        start_at = excluded.start_at, participants_fetched = true, rebuilt_through = excluded.rebuilt_through, synced_at = now()`;
+    await tx`delete from trc.zoom_unmatched where instance_uuid = ${instanceUuid}`;
     await tx`delete from trc.zoom_attendees where instance_uuid = ${instanceUuid}`;
     if (rows.length) await tx`insert into trc.zoom_attendees ${tx(rows)}`;
     if (call) await tx`update trc.appointments set zoom_attended = ${people.size >= 2} where id = ${call.id}`;
@@ -75,3 +83,19 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
 
 /** Whether someone was still in the webinar at the pitch (PITCH_MINUTE after the start). */
 export const stayedToPitch = (start: Date, lastLeave: Date | null) => !!lastLeave && lastLeave.getTime() >= start.getTime() + PITCH_MINUTE * 60_000;
+
+/**
+ * Rebuild every instance with events no rebuild has read yet (trc.zoom_dirty), one after another. Called after the webhook has
+ * answered Zoom, before the dashboard reads attendance, and by the daily sync, so attendance is current whichever runs first.
+ * Two servers rebuilding the same instance at once read the same events; if their writes clash one fails (logged) and the other's
+ * result stands, so no lock is needed.
+ */
+export async function rebuildDirty(sql: postgres.Sql, limit = 50): Promise<{ rebuilt: number; left: number }> {
+  const dirty = await sql<Array<{ instance_uuid: string }>>`select instance_uuid from trc.zoom_dirty order by last_event_id limit ${limit + 1}`;
+  let rebuilt = 0;
+  for (const d of dirty.slice(0, limit)) {
+    try { await rebuildInstance(sql, d.instance_uuid); rebuilt++; }
+    catch (err) { console.error(`[zoom] rebuild ${d.instance_uuid}: ${err instanceof Error ? err.message : String(err)}`); }
+  }
+  return { rebuilt, left: Math.max(0, dirty.length - limit) };
+}

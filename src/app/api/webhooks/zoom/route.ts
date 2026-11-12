@@ -1,13 +1,15 @@
-import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { after, NextResponse } from "next/server";
+import { db, serial } from "@/lib/db";
 import { env } from "@/lib/env";
-import { eventRow, rebuildInstance, urlValidationAnswer, zoomSignatureOk } from "@/lib/zoom-webhook";
+import { eventRow, rebuildDirty, urlValidationAnswer, zoomSignatureOk } from "@/lib/zoom-webhook";
 
 export const maxDuration = 30;
 
 /**
  * Zoom "Webhook only" app endpoint: participant joined / left for meetings and webinars. Every request must carry Zoom's
- * signature (ZOOM_WEBHOOK_SECRET_TOKEN, the app's Secret Token). Events are stored once and the instance's attendance rebuilt.
+ * signature (ZOOM_WEBHOOK_SECRET_TOKEN, the app's Secret Token). The request only stores the event (once: Zoom retries) and
+ * answers; attendance is rebuilt after the answer (and again by the dashboard and the daily sync, see rebuildDirty). 2026-11-12:
+ * rebuilding inside the request timed out when Zoom sent a burst of joins at the start of a webinar.
  */
 export async function POST(request: Request) {
   const secret = env.zoomWebhookSecret();
@@ -26,9 +28,7 @@ export async function POST(request: Request) {
   const row = eventRow(body as Parameters<typeof eventRow>[0]);
   if (!row) return NextResponse.json({ ok: true, ignored: body.event ?? null });
   const sql = db();
-  await sql`insert into trc.zoom_events ${sql(row)} on conflict (event, instance_uuid, participant_key, at) do nothing`;
-  // Attendance for this instance is rebuilt from its events; a failure here is retried by the next event or the daily sync.
-  try { await rebuildInstance(sql, row.instance_uuid); }
-  catch (err) { console.error(`[zoom webhook] rebuild ${row.instance_uuid}: ${err instanceof Error ? err.message : String(err)}`); }
+  await serial(() => sql`insert into trc.zoom_events ${sql(row)} on conflict (event, instance_uuid, participant_key, at) do nothing`);
+  after(() => serial(() => rebuildDirty(sql, 5)).catch((err) => console.error(`[zoom webhook] rebuild: ${err instanceof Error ? err.message : String(err)}`)));
   return NextResponse.json({ ok: true });
 }

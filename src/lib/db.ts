@@ -14,7 +14,18 @@ export function poolerMode(): string {
   }
 }
 
-const globalForDb = globalThis as unknown as { trcSql?: postgres.Sql };
+const globalForDb = globalThis as unknown as { trcSql?: postgres.Sql; trcQueue?: Promise<unknown> };
+
+/**
+ * Runs `fn` after every earlier `serial` call on this server has finished. Vercel runs several requests at once on one server
+ * (2026-11-12: a burst of Zoom webhooks), and they share the one connection below; queries sent on it at the same time stack up
+ * and Supabase's pooler stops answering them. Anything that can run alongside other requests goes through here.
+ */
+export function serial<T>(fn: () => Promise<T>): Promise<T> {
+  const run = (globalForDb.trcQueue ?? Promise.resolve()).then(fn, fn);
+  globalForDb.trcQueue = run.catch(() => undefined);
+  return run;
+}
 
 export function db(): postgres.Sql {
   if (!globalForDb.trcSql) {

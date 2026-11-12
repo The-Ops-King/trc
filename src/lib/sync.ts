@@ -9,6 +9,7 @@ import * as ghl from "./ghl";
 import * as whop from "./whop";
 import * as meta from "./meta";
 import * as zoom from "./zoom";
+import { rebuildDirty } from "./zoom-webhook";
 
 const DAY = 86_400_000;
 /** Webinar start can drift from the advertised time; match Zoom instances within this window. */
@@ -404,6 +405,9 @@ export async function runSync(trigger: "cron" | "manual", budgetMs = 270_000) {
   await step("tracker_sheet", TRACKER_SHEET_ID, () => syncTrackerSheet(c, TRACKER_SHEET_ID));
   // Zoom runs last: it matches against registrations and appointments synced above.
   await step("zoom", z, () => syncZoom(c, z!));
+  // Attendance from the Zoom webhook's events: any meeting with events no rebuild has read yet (matches need the registrations and
+  // appointments synced above).
+  await step("zoom_webhook_rebuild", true, async () => ({ ok: true, detail: await rebuildDirty(sql, 200) }));
 
   const ok = Object.values(results).every((r) => r.ok);
   await sql`update trc.sync_runs set finished_at = now(), ok = ${ok}, detail = ${sql.json(results as postgres.JSONValue)} where id = ${run!.id}`;
