@@ -1,6 +1,6 @@
 import "server-only";
 import type postgres from "postgres";
-import { PITCH_MINUTE } from "./config";
+import { PITCH_MINUTE, WEBINAR_ZOOM_IDS } from "./config";
 export { eventRow, urlValidationAnswer, zoomSignatureOk } from "./zoom-webhook-core";
 
 // Turning stored Zoom joined/left events into attendance per instance (the webhook itself is in zoom-webhook-core.ts).
@@ -10,8 +10,9 @@ const MATCH_BEFORE_MS = 30 * 60_000, MATCH_AFTER_MS = 90 * 60_000, CALL_MATCH_MS
 
 /**
  * Rebuild one instance's attendance from its stored events: each person's first join, last leave and minutes in the room
- * (join/leave pairs, a still-open join closed at the last event seen), then match the instance to a webinar session (by start
- * time) or an onboarding call (by meeting number in the call's Zoom link and start time). Unmatched instances are left alone.
+ * (join/leave pairs, a still-open join closed at the last event seen), then match the instance to a webinar session (the webinar
+ * room, by start time) or an onboarding call (by meeting number in the call's Zoom link and start time). Unmatched instances are
+ * left alone.
  */
 export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): Promise<"webinar" | "onboarding" | "unmatched"> {
   const evs = await sql<Array<{ id: number; event: string; zoom_type: "meeting" | "webinar"; zoom_id: string; topic: string | null; instance_start: Date | null; participant_key: string; email: string | null; name: string | null; at: Date }>>`
@@ -29,22 +30,19 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
   const start = first.instance_start ?? evs.reduce((m, e) => (e.at < m ? e.at : m), first.at);
   const lastSeen = evs.at(-1)!.at;
 
-  // which session or call is this?
-  const [session] = await sql<Array<{ session_at: Date }>>`
+  // which session or call is this? The webinar room (or a Zoom Webinar) is only ever a webinar session; any other meeting only
+  // ever an onboarding call.
+  const webinarRoom = first.zoom_type === "webinar" || WEBINAR_ZOOM_IDS.includes(first.zoom_id);
+  const [session] = !webinarRoom ? [] : await sql<Array<{ session_at: Date }>>`
     select session_at from trc.registrations
     where session_at between ${new Date(start.getTime() - MATCH_AFTER_MS)} and ${new Date(start.getTime() + MATCH_BEFORE_MS)}
     group by session_at order by abs(extract(epoch from session_at - ${start}::timestamptz)) limit 1`;
-  const [call] = session ? [] : await sql<Array<{ id: string }>>`
+  const [call] = webinarRoom ? [] : await sql<Array<{ id: string }>>`
     select id from trc.appointments
     where kind = 'onboarding' and meeting_url like ${"%" + first.zoom_id + "%"}
       and start_at between ${new Date(start.getTime() - CALL_MATCH_MS)} and ${new Date(start.getTime() + CALL_MATCH_MS)}
     order by abs(extract(epoch from start_at - ${start}::timestamptz)) limit 1`;
   if (!session && !call) return unmatched();
-  if (session && first.zoom_type === "meeting") {
-    // a Zoom Webinar already matched to this session wins: another meeting that happened to start then is not the webinar
-    const [webinar] = await sql`select 1 from trc.zoom_instances where session_at = ${session.session_at} and kind = 'webinar' and zoom_type = 'webinar' limit 1`;
-    if (webinar) return unmatched();
-  }
 
   const people = new Map<string, { email: string | null; name: string | null; first: number; last: number; ms: number; open: number | null }>();
   for (const e of evs) {

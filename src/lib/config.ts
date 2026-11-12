@@ -45,6 +45,13 @@ export const EXCLUDED_WHOP_PAYMENT_IDS: ReadonlyArray<{ id: string; reason: stri
  */
 export const TRACKER_SHEET_ID = "1o9qEtbcv17A9UIy_Km4Nn6StjBgPISvSrf7NPbXExKQ";
 
+/**
+ * Zoom rooms the webinar runs in. Tiffany runs every webinar in her Personal Meeting Room (Tyler, 2026-11-12: "if it says her
+ * personal room that's the webinar"), and the GHL custom value "Standout Webinar - Zoom Link" points there. Only these rooms (and
+ * Zoom Webinars) count as a webinar session; any other meeting can only be an onboarding call.
+ */
+export const WEBINAR_ZOOM_IDS: ReadonlyArray<string> = ["9839354646"];
+
 /** Minutes after webinar start that count as "stayed until the pitch". */
 export const PITCH_MINUTE = 45;
 
