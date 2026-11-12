@@ -1,4 +1,4 @@
-// Reading the team's tracker sheet ("Tiffany Rose LEAP - 2026"). The sheet is link-shared, so no API key: the sheet's tab list
+// Reading the team's tracker sheet ("Webinar KPI Dashboard Main Final", an .xlsx kept in Google Drive). The sheet is link-shared, so no API key: the sheet's tab list
 // (name -> tab id) is read from its public view, and each tab is downloaded as CSV with the full export, which keeps every row and
 // header. (Google's by-name CSV endpoint blanks text in mostly-numeric columns, headers included, so it is not used.) A new
 // month's tab is found by its name. Read only. A month tab is still only used when its rows' dates fall in that month.
@@ -34,7 +34,7 @@ export function num(s: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export type AdDay = { date: string; spend: number; linkClicks: number | null; impressions: number | null };
+export type AdDay = { date: string; spend: number; linkClicks: number | null; impressions: number | null; outboundClicks: number | null };
 
 /**
  * The FB Stats tab: three side-by-side blocks (LEAP, Lead Magnet, Standout), each "Date Start, Amount spent, Click (all),
@@ -54,7 +54,9 @@ export function parseFbStats(rows: string[][], block = "Tiffany Rose Standout"):
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
     const spend = num(r[d + 1]);
     if (spend === null) continue;
-    out.push({ date, spend, linkClicks: num(r[d + 3]), impressions: num(r[d + 7]) });
+    const impressions = num(r[d + 7]), outboundCtr = num(r[d + 5]);   // Outbound CTR is a percent of impressions
+    out.push({ date, spend, linkClicks: num(r[d + 3]), impressions,
+      outboundClicks: impressions !== null && outboundCtr !== null ? Math.round((impressions * outboundCtr) / 100) : null });
   }
   return out;
 }
@@ -63,9 +65,15 @@ export type WebinarDay = { date: string; showUps: number | null; purchases: numb
 
 export const monthTabName = (year: number, month0: number) => `Tiffany Rose LEAP - ${MONTHS[month0]} ${year}`;
 
+/** A month's tab id. The sheet is an .xlsx file, whose tab names Excel cuts at 31 characters ("Tiffany Rose LEAP - November 20"). */
+export function monthTabId(tabs: Map<string, string>, year: number, month0: number): string | undefined {
+  const full = monthTabName(year, month0);
+  return tabs.get(full) ?? tabs.get(full.slice(0, 31));
+}
+
 /**
- * A monthly tab ("Tiffany Rose LEAP - October 2026"): week blocks whose header row names the columns ("Date", "Show Ups",
- * "Purchases", "Grand Total", ...), then one row per day ("Tue, Oct 6"). Columns are found by their header, not position.
+ * A monthly tab ("Tiffany Rose LEAP - October 2026"): week blocks whose header row names the columns ("Date", "Attend" (called
+ * "Show Ups" until Nov 2026), "Purchases", "Grand Total", ...), then one row per day ("Tue, Oct 6"). Columns are found by their header, not position.
  * Only days with a show-up or a purchase are returned. Rows from any other month are refused (see the note at the top).
  */
 export function parseMonthTab(rows: string[][], year: number, month0: number): WebinarDay[] {
@@ -74,9 +82,9 @@ export function parseMonthTab(rows: string[][], year: number, month0: number): W
   let foreign = 0;
   for (const r of rows) {
     const di = r.findIndex((c) => c.trim() === "Date");
-    if (di >= 0 && r.some((c) => c.trim() === "Show Ups")) {
+    if (di >= 0 && r.some((c) => c.trim() === "Show Ups" || c.trim() === "Attend")) {
       const at = (name: string) => r.findIndex((c) => c.trim() === name);
-      cols = { date: di, show: at("Show Ups"), buys: at("Purchases"), total: at("Grand Total") };
+      cols = { date: di, show: at("Attend") >= 0 ? at("Attend") : at("Show Ups"), buys: at("Purchases"), total: at("Grand Total") };
       continue;
     }
     if (!cols) continue;
@@ -88,7 +96,10 @@ export function parseMonthTab(rows: string[][], year: number, month0: number): W
     const purchases = cols.buys >= 0 ? num(r[cols.buys]) : null;
     if (!showUps && !purchases) continue;
     const date = `${year}-${String(month0 + 1).padStart(2, "0")}-${m[2]!.padStart(2, "0")}`;
-    out.push({ date, showUps, purchases, cash: cols.total >= 0 ? num(r[cols.total]) : null });
+    // Grand Total is a formula that goes wrong on days with high-ticket rows ($1.00 on a $15,554 day): it counts as the $97 cash
+    // only when it is at least $1 per purchase
+    const total = cols.total >= 0 ? num(r[cols.total]) : null;
+    out.push({ date, showUps, purchases, cash: total !== null && purchases && total >= purchases ? total : null });
   }
   if (!out.length && foreign) return []; // Google handed back another tab: this month's tab does not exist yet
   return out;

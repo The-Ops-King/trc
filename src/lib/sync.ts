@@ -9,6 +9,7 @@ import * as ghl from "./ghl";
 import * as whop from "./whop";
 import * as meta from "./meta";
 import * as zoom from "./zoom";
+import { parseTarget } from "./targets";
 import { rebuildDirty } from "./zoom-webhook";
 
 const DAY = 86_400_000;
@@ -206,25 +207,43 @@ async function syncMeta(c: Ctx, creds: meta.MetaCreds): Promise<Result> {
   // Meta keeps revising recent days (attribution, late spend): re-read the last 7.
   const since = cursor?.backfilled ? ymd(new Date(Date.now() - 7 * DAY)) : BACKFILL_START;
   const until = ymd(new Date());
-  const days = await meta.campaignDaily(creds, since, until);
-  if (days.length) {
-    const rows = days.map((d) => ({
-      date: d.date,
-      campaign_id: d.campaignId,
-      campaign_name: d.campaignName,
-      spend_usd: d.spend,
-      impressions: d.impressions,
-      link_clicks: d.linkClicks,
-      landing_page_views: d.landingPageViews,
-    }));
-    await c.sql`
-      insert into trc.meta_daily ${c.sql(rows)}
-      on conflict (date, campaign_id) do update set
-        campaign_name = excluded.campaign_name, spend_usd = excluded.spend_usd, impressions = excluded.impressions,
-        link_clicks = excluded.link_clicks, landing_page_views = excluded.landing_page_views, synced_at = now()`;
+  const ads = await meta.adDaily(creds, since, until);
+  if (ads.length) {
+    await c.sql.begin(async (tx) => {
+      await tx`delete from trc.meta_ad_daily where date between ${since}::date and ${until}::date`;
+      for (let i = 0; i < ads.length; i += 500) {
+        await tx`insert into trc.meta_ad_daily ${tx(ads.slice(i, i + 500).map((d) => ({
+          date: d.date, ad_id: d.adId, campaign_id: d.campaignId, campaign_name: d.campaignName, adset_name: d.adsetName, ad_name: d.adName,
+          spend_usd: d.spend, impressions: d.impressions, link_clicks: d.linkClicks, outbound_clicks: d.outboundClicks,
+        })))}`;
+      }
+    });
+    // campaign totals per day, the table every spend number reads (trc.ad_daily)
+    const byCampaign = new Map<string, { date: string; campaign_id: string; campaign_name: string | null; spend_usd: number; impressions: number; link_clicks: number; outbound_clicks: number; landing_page_views: number }>();
+    for (const d of ads) {
+      const k = `${d.date}|${d.campaignId}`;
+      const r = byCampaign.get(k) ?? { date: d.date, campaign_id: d.campaignId, campaign_name: d.campaignName, spend_usd: 0, impressions: 0, link_clicks: 0, outbound_clicks: 0, landing_page_views: 0 };
+      r.spend_usd += d.spend; r.impressions += d.impressions; r.link_clicks += d.linkClicks; r.outbound_clicks += d.outboundClicks; r.landing_page_views += d.landingPageViews;
+      byCampaign.set(k, r);
+    }
+    await c.sql.begin(async (tx) => {
+      await tx`delete from trc.meta_daily where date between ${since}::date and ${until}::date`;
+      await tx`insert into trc.meta_daily ${tx([...byCampaign.values()])}`;
+    });
   }
+  // status and thumbnails are nice to have; never fail the spend over them
+  let info = 0;
+  try {
+    const rows = await meta.adInfo(creds);
+    if (rows.length) {
+      await c.sql`
+        insert into trc.meta_ads ${c.sql(rows.map((r) => ({ ad_id: r.adId, status: r.status, thumbnail_url: r.thumbnail, frequency_7d: r.frequency7d })))}
+        on conflict (ad_id) do update set status = excluded.status, thumbnail_url = excluded.thumbnail_url, frequency_7d = excluded.frequency_7d, synced_at = now()`;
+    }
+    info = rows.length;
+  } catch { /* reported as 0 below */ }
   await setCursor(c.sql, "meta_daily", { backfilled: true });
-  return { ok: true, detail: { rows: days.length, since, until } };
+  return { ok: true, detail: { adRows: ads.length, adsWithStatus: info, since, until } };
 }
 
 // ---------------------------------------------------------------------------
@@ -351,9 +370,9 @@ async function syncTrackerSheet(c: Ctx, sheetId: string): Promise<Result> {
   const ad = sheet.parseFbStats(await sheet.fetchTab(sheetId, fbGid, "FB Stats"));
   if (ad.length) {
     await c.sql`
-      insert into trc.sheet_ad_daily ${c.sql(ad.map((d) => ({ date: d.date, spend_usd: d.spend, link_clicks: d.linkClicks, impressions: d.impressions })))}
+      insert into trc.sheet_ad_daily ${c.sql(ad.map((d) => ({ date: d.date, spend_usd: d.spend, link_clicks: d.linkClicks, impressions: d.impressions, outbound_clicks: d.outboundClicks })))}
       on conflict (date) do update set spend_usd = excluded.spend_usd, link_clicks = excluded.link_clicks,
-        impressions = excluded.impressions, synced_at = now()`;
+        impressions = excluded.impressions, outbound_clicks = excluded.outbound_clicks, synced_at = now()`;
   }
 
   // Every month from the backfill start to this month. A month's rows are replaced as a whole, so a number the team clears is
@@ -363,7 +382,7 @@ async function syncTrackerSheet(c: Ctx, sheetId: string): Promise<Result> {
   const nowLa = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit" }).format(new Date());
   const [ny, nm] = nowLa.split("-").map(Number) as [number, number];
   for (let y = by, m0 = bm - 1; y < ny || (y === ny && m0 <= nm - 1); m0 === 11 ? (y++, m0 = 0) : m0++) {
-    const tab = sheet.monthTabName(y, m0), gid = tabs.get(tab);
+    const tab = sheet.monthTabName(y, m0), gid = sheet.monthTabId(tabs, y, m0);
     if (!gid) { months.push({ year: y, month0: m0, tab, days: -1 }); continue; }
     const days = sheet.parseMonthTab(await sheet.fetchTab(sheetId, gid, tab), y, m0);
     const first = `${y}-${String(m0 + 1).padStart(2, "0")}-01`;
@@ -377,6 +396,21 @@ async function syncTrackerSheet(c: Ctx, sheetId: string): Promise<Result> {
   }
   const lastSpend = ad.reduce((m, d) => (d.date > m ? d.date : m), "");
   return { ok: true, detail: { adDays: ad.length, lastSpendDay: lastSpend || null, webinarDays: Object.fromEntries(months.map((x) => [x.tab, x.days < 0 ? "no tab" : x.days])) } };
+}
+
+// ---------------------------------------------------------------------------
+// Targets: GHL Custom Values named "KPI …" (see targets.ts). Replaced whole, so a target removed in GHL goes here too.
+// ---------------------------------------------------------------------------
+async function syncTargets(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
+  const rows = (await ghl.listCustomValues(creds))
+    .map((v) => ({ v, t: parseTarget(v.name, v.value) }))
+    .filter((x) => x.t)
+    .map((x) => ({ name: x.v.name.trim().toLowerCase(), value: x.t![1] }));
+  await c.sql.begin(async (tx) => {
+    await tx`delete from trc.kpi_targets`;
+    if (rows.length) await tx`insert into trc.kpi_targets ${tx(rows)}`;
+  });
+  return { ok: true, detail: { targets: Object.fromEntries(rows.map((r) => [r.name, r.value])) } };
 }
 
 export async function runSync(trigger: "cron" | "manual", budgetMs = 270_000) {
@@ -400,6 +434,7 @@ export async function runSync(trigger: "cron" | "manual", budgetMs = 270_000) {
   const z = env.zoom();
   await step("ghl_registrations", g, () => syncRegistrations(c, g!));
   await step("ghl_appointments", g, () => syncAppointments(c, g!));
+  await step("kpi_targets", g, () => syncTargets(c, g!));
   await step("whop_payments", w, () => syncWhop(c, w!.key));
   await step("meta_ads", m, () => syncMeta(c, m!));
   await step("tracker_sheet", TRACKER_SHEET_ID, () => syncTrackerSheet(c, TRACKER_SHEET_ID));

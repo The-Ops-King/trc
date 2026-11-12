@@ -1,6 +1,7 @@
 import "server-only";
 import { db, serial } from "./db";
 import { rebuildDirty } from "./zoom-webhook";
+import { daily, highTicketBuyers, loadTargets, ltvCac, resultsByAd } from "./dash";
 
 import { PITCH_MINUTE } from "./config";
 export { PITCH_MINUTE };
@@ -161,6 +162,8 @@ export type PeriodTotals = {
   ad_spend: number;
   landing_page_views: number;       // Meta only
   link_clicks: number;              // Meta or the tracker sheet
+  impressions: number;
+  outbound_clicks: number;
   registrants_on_ad_days: number;   // registrants on days that have ad data (the registration rate's numerator)
   ad_source: "meta" | "sheet" | "mixed" | null;
   ad_last_day: string | null;       // the last day with spend in the window
@@ -180,6 +183,8 @@ export async function periodTotals(from: Date, to: Date): Promise<PeriodTotals> 
       (select coalesce(sum(spend_usd), 0) from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as ad_spend,
       (select coalesce(sum(landing_page_views), 0)::int from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as landing_page_views,
       (select coalesce(sum(link_clicks), 0)::int from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as link_clicks,
+      (select coalesce(sum(impressions), 0)::float8 from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as impressions,
+      (select coalesce(sum(outbound_clicks), 0)::float8 from trc.ad_daily where date between ${laDay(from)}::date and ${lastDay(to)}::date) as outbound_clicks,
       (select case when count(distinct source) > 1 then 'mixed' else max(source) end from trc.ad_daily
         where date between ${laDay(from)}::date and ${lastDay(to)}::date) as ad_source,
       (select to_char(max(date), 'YYYY-MM-DD') from trc.ad_daily
@@ -347,5 +352,11 @@ async function loadDashboardNow(from: Date, to: Date, prevFrom: Date, sessionsTo
   const thisWeekPeople = await step("weeks.thisWeekPeople", () => sessionRegistrants(weeks.thisMon, weeks.nextMon));
   const lastWeekPeople = await step("weeks.lastWeekPeople", () => sessionRegistrants(weeks.lastMon, weeks.thisMon));
   const lastWeekAsOf = await step("weeks.lastWeekAsOf", () => registrantsAsOf(weeks.lastMon, weeks.thisMon, new Date(Date.now() - 7 * 86_400_000)));
-  return { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf };
+  const targets = await step("targets", () => loadTargets());
+  const ads = await step("resultsByAd", () => resultsByAd(from, to));
+  const days = await step("daily", () => daily(from, to));
+  const buyers = await step("highTicketBuyers", () => highTicketBuyers(from, to));
+  const ltv = await step("ltvCac", () => ltvCac(from, to, totals.ad_spend));
+  const pLtv = await step("prev.ltvCac", () => ltvCac(prevFrom, from, pTotals.ad_spend));
+  return { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf, targets, ads, days, buyers, ltv, pLtv };
 }

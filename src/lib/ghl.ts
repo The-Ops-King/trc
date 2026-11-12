@@ -52,3 +52,9 @@ export async function getContactEmail(c: GhlCreds, contactId: string): Promise<s
   });
   return r.contact?.email ?? null;
 }
+
+export async function listCustomValues(c: GhlCreds): Promise<Array<{ name: string; value: string }>> {
+  const r = await fetchJson<{ customValues?: Array<{ name?: string; value?: string }> }>(
+    `${BASE}/locations/${encodeURIComponent(c.locationId)}/customValues`, { headers: headers(c) });
+  return (r.customValues ?? []).map((v) => ({ name: v.name ?? "", value: String(v.value ?? "") }));
+}

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCsv, parseFbStats, parseMonthTab, parseTabList, num } from "./sheet.ts";
+import { monthTabId, parseCsv, parseFbStats, parseMonthTab, parseTabList, num } from "./sheet.ts";
 
 test("tab list: names and ids from the public view", () => {
   const html = String.raw`x;var items = [];items.push({name: "Tiffany Rose LEAP - November 2026", pageUrl: "https:\/\/docs.google.com\/x", gid: "1006011984", initialSheet: true});items.push({name: "FB Stats", pageUrl: "https:\/\/y", gid: "80080062"});`;
@@ -32,8 +32,8 @@ const fb = parseCsv([
 
 test("FB Stats: reads only the Standout block", () => {
   assert.deepEqual(parseFbStats(fb), [
-    { date: "2026-10-01", spend: 1890.45, linkClicks: 580, impressions: 40639 },
-    { date: "2026-10-02", spend: 1889.02, linkClicks: 535, impressions: 35995 },
+    { date: "2026-10-01", spend: 1890.45, linkClicks: 580, impressions: 40639, outboundClicks: 581 },
+    { date: "2026-10-02", spend: 1889.02, linkClicks: 535, impressions: 35995, outboundClicks: 536 },
   ]);
 });
 
@@ -52,4 +52,25 @@ test("month tab: webinar days only, columns by header", () => {
 
 test("month tab: another month's rows are refused (Google returned a different tab)", () => {
   assert.deepEqual(parseMonthTab(oct, 2026, 10), []);
+});
+
+const nov = parseCsv([
+  ",Date,Ads Spend,Impressions,CPMs,Clicks (all),Link Clicks,CPC (cost per link click),Outbound CTR,CTR (all),Registrations,Opt-in Rate,Cost Per Registrations,Registered,Attend,Attend %,Cost Per Attend,Call Show Ups,Call Show %,Purchases,Purchase %,Cost Per Purchase,Upsells,Close Rate,Cash Collected,Contract,Grand Total,Daily Notes",
+  ',"Tue, Nov 3 ",$443.87,"9,633",$46.08,353,151,$2.94,1.57%,3.66%,31,20.53%,$14.32,29,30,103.45%,$26.29,1,500.00%,5,16.67%,$157.71,0,0.0%,,,$485.00,',
+  ',"Wed, Nov 4 ",,,,,,,,,,0.00%,,"""""",,"""""","""""",2,0.00%,,,"""""",2,100.0%,"$15,554.00","$15,554.00",$1.00,',
+  ',"Fri, Nov 6 ",,,,,,,,,,,,"""""",3,"""""","""""",6,0.00%,1,,"""""",3,50.0%,"$23,331.00","$23,331.00",$0.50,',
+].join("\n"));
+
+test("month tab (Nov 2026 layout): 'Attend' column; a broken Grand Total is not taken as cash", () => {
+  assert.deepEqual(parseMonthTab(nov, 2026, 10), [
+    { date: "2026-11-03", showUps: 30, purchases: 5, cash: 485 },
+    { date: "2026-11-06", showUps: 3, purchases: 1, cash: null },
+  ]);
+});
+
+test("month tab id: Excel's 31-character tab names", () => {
+  const tabs = new Map([["Tiffany Rose LEAP - November 20", "1"], ["Tiffany Rose LEAP - March 2026", "2"]]);
+  assert.equal(monthTabId(tabs, 2026, 10), "1");
+  assert.equal(monthTabId(tabs, 2026, 2), "2");
+  assert.equal(monthTabId(tabs, 2026, 11), undefined);
 });

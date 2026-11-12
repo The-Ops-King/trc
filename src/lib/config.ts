@@ -39,11 +39,12 @@ export const EXCLUDED_WHOP_PAYMENT_IDS: ReadonlyArray<{ id: string; reason: stri
 ];
 
 /**
- * The team's tracker sheet ("Tiffany Rose LEAP - 2026", the live one), read daily and never written to. Link-shared, so no key.
- * FB Stats → daily webinar ad spend (the "Tiffany Rose Standout" block); monthly tabs → show-ups and $97 lead-magnet sales per
- * webinar. Meta and Zoom take over spend and attendance once connected.
+ * The team's tracker ("Webinar KPI Dashboard Main Final", an .xlsx in Google Drive that the team updates daily; Tyler, 2026-11-12),
+ * read daily and never written to. Link-shared, so no key. FB Stats → daily webinar ad spend, clicks, impressions, outbound CTR
+ * (the "Tiffany Rose Standout" block); monthly tabs → attendance ("Attend") and $97 sales per webinar. Meta and Zoom take over
+ * spend and attendance once connected. Replaced the native "Tiffany Rose LEAP - 2026" sheet (1o9qEt…), which has no sales columns.
  */
-export const TRACKER_SHEET_ID = "1o9qEtbcv17A9UIy_Km4Nn6StjBgPISvSrf7NPbXExKQ";
+export const TRACKER_SHEET_ID = "1k5905vPyc-0l3WAyf5p3Ps2M8CdTphE5";
 
 /**
  * Zoom rooms the webinar runs in. Tiffany runs every webinar in her Personal Meeting Room (Tyler, 2026-11-12: "if it says her

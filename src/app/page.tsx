@@ -1,12 +1,12 @@
 import { redirect } from "next/navigation";
 import { hasSession } from "@/lib/guard";
 import { env } from "@/lib/env";
-import {
-  loadDashboard, PITCH_MINUTE, type SessionRow,
-} from "@/lib/metrics";
+import { loadDashboard, laDay, PITCH_MINUTE, type PeriodFunnel, type PeriodTotals, type SessionRow } from "@/lib/metrics";
+import type { AdRow, LtvCac } from "@/lib/dash";
+import { judge, type Targets } from "@/lib/targets";
 import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } from "@/lib/format";
 import { laWallTimeToUtc } from "@/lib/session";
-import { laDay, type PeriodFunnel, type PeriodTotals } from "@/lib/metrics";
+import { Card, DailyChart, Delta, Info, Section } from "./ui";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -15,17 +15,17 @@ const RANGES = [7, 30, 60, 90] as const;
 const DAY = 86_400_000;
 /** Show a warning when the last successful sync is older than this. */
 const STALE_AFTER_MS = 36 * 60 * 60 * 1000;
+/** Give up well before Vercel's 60s limit, so a stalled database shows a message instead of a timeout page. */
+const PAGE_DEADLINE_MS = 25_000;
 
 const fmt = (o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", ...o });
 /** "Tue, Nov 10 · 9 AM" */
 const sessionDay = (d: Date) => `${fmt({ weekday: "short", month: "short", day: "numeric" }).format(d)} · ${fmt({ hour: "numeric", minute: "2-digit" }).format(d).replace(":00", "")}`;
-/** "Nov 3" */
 const shortDate = (d: Date) => fmt({ weekday: "short", month: "short", day: "numeric" }).format(d);
-/** "Nov 9" from a YYYY-MM-DD Pacific day */
 const shortDay = (ymd: string) => new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short", day: "numeric" }).format(new Date(`${ymd}T12:00:00Z`));
-
-/** Give up well before Vercel's 60s limit, so a stalled database shows a message instead of a timeout page. */
-const PAGE_DEADLINE_MS = 25_000;
+const pctOf = (r: number | null, digits = 1) => (r === null ? "—" : `${(r * 100).toFixed(digits)}%`);
+const times = (n: number | null) => (n === null ? "—" : `${n.toFixed(2)}×`);
+const rate = (x: number, y: number) => (y ? x / y : null);
 
 function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -35,73 +35,60 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-
-type CardState = { needs?: string; warn?: string };
-
-function Card({ n, title, value, sub, help, state = {}, delta }: {
-  n: number; title: string; value: string; sub?: string; help: string; state?: CardState; delta?: React.ReactNode;
-}) {
-  const blocked = !!state.needs;
-  return (
-    <div className={`card metric${blocked ? " blocked" : ""}`} title={help}>
-      <div className="metric-head">
-        <span className="tag">{n}</span>
-        <span className="metric-title">{title}</span>
-      </div>
-      <div className="metric-value">{blocked ? "—" : value}</div>
-      {!blocked && delta}
-      <div className="metric-sub">
-        {blocked ? <span className="pill">Connect {state.needs}</span> : sub}
-        {!blocked && state.warn && <span className="pill warn">{state.warn}</span>}
-      </div>
-    </div>
-  );
-}
-
 function sum<K extends keyof SessionRow>(rows: SessionRow[], k: K): number {
   return rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
 }
 
-/** Every number on a card, from one period's data, so this period and the one before are computed the same way. */
-function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[]) {
-  const a = held.filter((s) => s.attendees !== null); // attendance from Zoom or the tracker sheet
-  const z = held.filter((s) => s.attendance_source === "zoom"); // stayed-to-pitch and attendee → buyer need Zoom
+/** Every number on the page from one period's data, so this period and the one before are computed the same way. */
+function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[], ltv: LtvCac) {
+  const a = held.filter((s) => s.attendees !== null);              // attendance from Zoom or the tracker
+  const z = held.filter((s) => s.attendance_source === "zoom");    // stayed to pitch and attendee → buyer need Zoom
   const known = f.onb_booked - f.onb_unknown;
-  const rate = (x: number, y: number) => (y ? x / y : null);
+  const clicks = t.landing_page_views || t.link_clicks;
   return {
     adSpend: t.ad_spend,
-    regRate: rate(t.registrants_on_ad_days, t.landing_page_views || t.link_clicks),
+    cpc: rate(t.ad_spend, t.link_clicks),
+    outCtr: rate(t.outbound_clicks, t.impressions),
+    signups: t.registrants,
+    optIn: rate(t.registrants_on_ad_days, clicks),
+    costPerReg: rate(t.ad_spend, t.registrants_on_ad_days),
+    registered: sum(held, "registrants"),
+    attendees: sum(a, "attendees"),
+    attRegs: sum(a, "registrants"),
     attendance: a.length ? rate(sum(a, "attendees"), sum(a, "registrants")) : null,
+    zoomAttendees: sum(z, "attendees"),
     stayed: z.length ? rate(sum(z, "stayed_to_pitch"), sum(z, "attendees")) : null,
     buyers: sum(held, "buyers"),
     cash: sum(held, "cash"),
+    lmBuys: sum(held, "lm_purchases"),
     lmCash: sum(held, "lm_cash"),
     attBuyer: z.length ? rate(sum(z, "attendee_buyers"), sum(z, "attendees")) : null,
+    onbBooked: f.onb_booked,
     onbAttended: f.onb_attended,
+    onbKnown: known,
     showRate: known > 0 ? f.onb_attended / known : null,
     htFromCalls: f.ht_after_onb_attended,
     callToHt: rate(f.ht_after_onb_attended, f.onb_attended),
     htCash: f.ht_cash,
+    htBuyers: f.ht_buyers,
     pif: rate(f.ht_pif, f.ht_purchases),
+    roas: rate(f.ht_cash, t.ad_spend),
+    cac: ltv.cac,
+    ltv: ltv.ltv,
+    ltvCac: ltv.ratio,
     failed: t.failed.people,
   };
 }
 
-/**
- * Change against the previous period of the same length. Counts and dollars: % change. Rates: percentage points, since a %
- * change of a % is easy to misread. `better` says which way is good (green) for this number.
- */
-function Delta({ cur, prev, kind, better = "up", label }: { cur: number | null; prev: number | null; kind: "count" | "rate"; better?: "up" | "down" | "neither"; label: string }) {
-  if (cur === null || prev === null) return <div className="delta flat">no comparison · {label}</div>;
-  const diff = cur - prev;
-  if (Math.abs(diff) < 1e-9) return <div className="delta flat">no change · {label}</div>;
-  const good = (diff > 0) === (better === "up");
-  const arrow = diff > 0 ? "▲" : "▼";
-  let text: string;
-  if (kind === "rate") text = `${diff > 0 ? "+" : "−"}${Math.abs(diff * 100).toFixed(1)} pts`;
-  else if (prev === 0) text = "new";
-  else text = `${diff > 0 ? "+" : "−"}${Math.abs((diff / prev) * 100).toFixed(1)}%`;
-  return <div className={`delta ${better === "neither" ? "neutral" : good ? "good" : "bad"}`}>{arrow} {text} <span className="muted">· {label}</span></div>;
+/** Cut / scale / watch for an ad, from the cost-per-high-ticket-buyer target (PMU's "KPI Max Cost Per Close"). Needs Meta spend. */
+function verdict(r: AdRow, t: Targets): { key: string; label: string; why: string } | null {
+  if (r.spend === null) return null;
+  const max = t.costPerCloseMax ?? 3000;
+  const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+  if (r.spend < max) return { key: "early", label: "Too early", why: `Under ${usd0(max)} spent` };
+  if (r.ht_buyers === 0 && r.spend >= 2 * max) return { key: "cut", label: "Cut", why: `${usd0(r.spend)} spent, no high-ticket buyers` };
+  if (r.ht_buyers >= 2 && r.spend / r.ht_buyers <= max) return { key: "scale", label: "Scale", why: `${r.ht_buyers} high-ticket buyers at ${usd0(r.spend / r.ht_buyers)} each` };
+  return { key: "watch", label: "Watch", why: "Not enough to call either way" };
 }
 
 export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string; cmp?: string; from?: string; to?: string }> }) {
@@ -125,8 +112,9 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const from = startOfLaDay(fromYmd);
   const to = toYmd === today ? now : startOfLaDay(shiftDays(toYmd, 1));
   const prevFrom = startOfLaDay(shiftDays(fromYmd, -days));
-  const periodLabel = custom ? `${shortDay(fromYmd)} – ${shortDay(toYmd)}` : `last ${days} days`;
-  const vsLabel = `vs previous ${days} day${days === 1 ? "" : "s"}`;
+  const prevToYmd = shiftDays(fromYmd, -1);
+  const periodLabel = custom ? `${shortDay(fromYmd)} – ${shortDay(toYmd)}` : `the last ${days} days (${shortDay(fromYmd)} – ${shortDay(toYmd)})`;
+  const vsLabel = "vs before";
   const link = (o: { days?: number; cmp?: string; keepCustom?: boolean }) => {
     const c = (o.cmp ?? cmp) === "final" ? "&cmp=final" : "";
     return custom && o.keepCustom !== false && o.days === undefined ? `/?from=${custom.from}&to=${custom.to}${c}` : `/?days=${o.days ?? days}${c}`;
@@ -146,336 +134,457 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
       PAGE_DEADLINE_MS,
     );
   } catch (err) {
-    console.error(`[dashboard] page data failed: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[dashboard] page data failed: ${message}`);
+    const timedOut = message.startsWith("no answer within");
     return (
       <main>
         <div className="notice err">
-          <b>The dashboard couldn&apos;t load its numbers.</b> The database didn&apos;t answer in time. Refresh in a minute; if it keeps
-          happening, the cause is in the Vercel logs under &quot;[dashboard]&quot;.
+          <b>The dashboard couldn&apos;t load its numbers.</b> {timedOut ? "The database didn't answer in time. Refresh in a minute; if it keeps happening, " : "A query failed; "}
+          the cause is in the Vercel logs under &quot;[dashboard]&quot;.
         </div>
       </main>
     );
   }
-  const { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf } = data;
+  const { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf, targets: t, ads, days: dayRows, buyers, ltv, pLtv } = data;
 
   const metaOn = !!env.meta();
-  const zoomOn = !!env.zoom();
-  // Ad spend: Meta when connected, else the team's tracker sheet (FB Stats).
+  const location = env.ghl()?.locationId ?? null;
+  const minN = t.minSample ?? 10;
+  // Ad spend: Meta when connected, else the team's tracker (FB Stats).
   const adOn = metaOn || totals.ad_source !== null || pTotals.ad_source !== null;
-  const needMeta: CardState = adOn ? {} : { needs: "Meta Ads" };
-  const adFromSheet = totals.ad_source === "sheet" || totals.ad_source === "mixed";
   const yesterday = shiftDays(today, -1);
   // The tracker's spend feed can stop (it did on 2026-11-03): say so instead of showing a low or $0 spend as if it were real.
   const adStale = !metaOn && totals.ad_last_any && totals.ad_last_any < (toYmd < yesterday ? toYmd : yesterday) ? totals.ad_last_any : null;
-  const adNone = adOn && totals.ad_source === null; // no spend recorded anywhere in this window
-  const adState: CardState = adOn ? (adStale ? { warn: `Tracker has no ad spend after ${shortDay(adStale)}${adNone ? "" : ": this period is incomplete"}` } : {}) : needMeta;
+  const adNone = adOn && totals.ad_source === null;
+  const adWarn = adStale ? `No ad data after ${shortDay(adStale)}${adNone ? "" : ": this period is incomplete"}` : undefined;
   /** A cost per registrant is only shown when spend exists for (nearly) every day its registrants signed up. */
   const spendComplete = (rows: number, covered: number) => rows > 0 && covered / rows >= 0.95;
-  const incomplete = <span className="pill warn">Cost per registrant: ad spend missing for some sign-up days{adStale ? ` (tracker stopped ${shortDay(adStale)})` : ""}</span>;
-  const regDenom = totals.landing_page_views ? { n: totals.landing_page_views, label: "landing page views" } : { n: totals.link_clicks, label: "link clicks" };
+  const clicksLabel = totals.landing_page_views ? "landing page views" : "link clicks";
 
-  // Webinar numbers (4-8) are per session: sessions held in the selected window.
+  // Webinar numbers are per session: sessions held in the selected window.
   const held = sessions.filter((s) => s.session_at <= now && s.session_at < to);
-  const cur = figures(totals, funnel, held);
-  const prev = figures(pTotals, pFunnel, pSessions);
+  const cur = figures(totals, funnel, held, ltv);
+  const prev = figures(pTotals, pFunnel, pSessions, pLtv);
   const upcoming = custom ? [] : sessions.filter((s) => s.session_at > now).reverse();
-  // This week's and last week's webinars, each by its own date.
   const inWeek = (start: Date, end: Date) => weekSessions.filter((x) => x.session_at >= start && x.session_at < end).slice().sort((a, b) => +a.session_at - +b.session_at);
   const thisWeek = inWeek(weeks.thisMon, weeks.nextMon), lastWeek = inWeek(weeks.lastMon, weeks.thisMon);
   const weekday = (d: Date) => fmt({ weekday: "short" }).format(d);
-  // the same weekday last week (by Pacific weekday, so a daylight-saving change in between does not break the match)
   const sameDayLastWeek = (x: SessionRow) => lastWeek.find((y) => weekday(y.session_at) === weekday(x.session_at)) ?? null;
   const weekRows = [
     { label: "This week", range: weekRange(thisMonYmd), sessions: thisWeek, people: thisWeekPeople, compare: true },
     { label: "Last week", range: weekRange(shiftDays(thisMonYmd, -7)), sessions: lastWeek, people: lastWeekPeople, compare: false },
   ];
-
   const withAtt = held.filter((s) => s.attendees !== null);
   const withZoom = held.filter((s) => s.attendance_source === "zoom");
-  const attFromTracker = withAtt.some((s) => s.attendance_source === "tracker");
-  const needZoom: CardState = withZoom.length ? {} : { needs: "Zoom" };
-  const regsHeld = sum(held, "registrants");
-  const attendees = sum(withAtt, "attendees");
-  const regsWithAtt = sum(withAtt, "registrants");
-  const zoomAttendees = sum(withZoom, "attendees");
+  const fromTracker = withAtt.filter((s) => s.attendance_source === "tracker").length;
+  const onbUnknown = funnel.onb_unknown;
 
-  // Onboarding attendance is only meaningful for calls with a known result.
-  const onbKnown = funnel.onb_booked - funnel.onb_unknown;
-  const onbWarn: CardState =
-    funnel.onb_unknown > 0 ? { warn: `${num(funnel.onb_unknown)} call${funnel.onb_unknown === 1 ? "" : "s"} with no attendance recorded` } : {};
+  // targets → ok / miss / thin
+  const f = {
+    costPerReg: judge(cur.costPerReg, t.costPerRegistrantMax, totals.registrants_on_ad_days, minN, true),
+    optIn: judge(cur.optIn === null ? null : cur.optIn * 100, t.registrationRate, totals.registrants_on_ad_days, minN),
+    attendance: judge(cur.attendance === null ? null : cur.attendance * 100, t.attendanceRate, cur.attRegs, minN),
+    stayed: judge(cur.stayed === null ? null : cur.stayed * 100, t.stayedRate, cur.zoomAttendees, minN),
+    attBuyer: judge(cur.attBuyer === null ? null : cur.attBuyer * 100, t.webinarConversion, cur.zoomAttendees, minN),
+    show: judge(cur.showRate === null ? null : cur.showRate * 100, t.show, cur.onbKnown, minN),
+    close: judge(cur.callToHt === null ? null : cur.callToHt * 100, t.close, cur.onbAttended, minN),
+    pif: judge(cur.pif === null ? null : cur.pif * 100, t.pifRate, funnel.ht_purchases, minN),
+    cac: judge(cur.cac, t.costPerCloseMax, ltv.new_buyers, 1, true),
+    roas: judge(cur.roas, t.roasMin, funnel.ht_purchases, 1),
+    ltvCac: judge(cur.ltvCac, t.ltvCacMin, ltv.new_buyers, 1),
+  };
+  const tgt = (v: number | undefined, unit: "%" | "$" | "x", max = false) =>
+    v === undefined ? undefined : `${max ? "max " : "target "}${unit === "$" ? `$${v.toLocaleString("en-US")}` : unit === "x" ? `${v}×` : `${v}%`}`;
 
+  // What makes these numbers less exact, said once, at the top (PMU's warnings panel).
   const stale = !lastOk || now.getTime() - lastOk.getTime() > STALE_AFTER_MS;
   const failedSources = Object.entries(sync?.detail ?? {}).filter(([, v]) => !v.ok).map(([k]) => k);
+  const warnings: string[] = [];
+  if (stale) warnings.push("The data is more than 36 hours old. Press Sync now; if that fails, see Sync status at the bottom.");
+  if (failedSources.length) warnings.push(`The last sync failed for: ${failedSources.join(", ")}. Details under Sync status at the bottom.`);
+  if (!metaOn) warnings.push(`Meta isn't connected: ad spend, clicks, CPC and outbound CTR come from the team's tracker (FB Stats), and Results by ad has no spend per ad yet.`);
+  if (adStale) warnings.push(`The tracker has no ad spend after ${shortDay(adStale)}, so spend for later days is missing and costs after that date aren't shown.`);
+  if (fromTracker) warnings.push(`${fromTracker} of ${withAtt.length} webinars in this period take attendance from the team's tracker (typed in), not Zoom. Stayed to pitch and attendee → buyer count Zoom webinars only (from Nov 12).`);
+  if (onbUnknown) warnings.push(`${num(onbUnknown)} onboarding call${onbUnknown === 1 ? " has" : "s have"} no showed / no-show mark in GHL and no Zoom match, so the show rate leaves ${onbUnknown === 1 ? "it" : "them"} out.`);
+  warnings.push("Churn needs Kajabi, which isn't connected. LTV is the cash a high-ticket buyer has paid on Whop so far; it will rise as payment plans and financing pay out.");
+  if (!Object.keys(t).some((k) => !["minSample", "show", "close", "costPerCloseMax", "roasMin"].includes(k)))
+    warnings.push("No webinar targets are set yet. Add them in GHL → Settings → Custom Values (\"KPI Max Cost Per Registrant\", \"KPI Attendance Rate\", …, listed under How each number is calculated); show rate, close rate, cost per high-ticket buyer and ROAS use PMU's defaults until then.");
+
+  const adRows = ads.filter((r) => r.registrants > 0 || (r.spend ?? 0) > 0);
+  const contactUrl = (id: string | null) => (id && location ? `https://app.tiffanyrosecoaching.com/v2/location/${location}/contacts/detail/${id}` : null);
 
   return (
-    <main>
-      <header className="row spread">
-        <div className="row" style={{ gap: 20 }}>
-          <div className="brand">
-            <img src="/logo.png" alt="Tiffany Rose Coaching" />
-            <div><span className="eyebrow">Tiffany Rose Coaching</span><h1>Funnel Dashboard</h1></div>
+    <>
+      <div className="bar">
+        <div className="bar-inner">
+          <div className="bar-top">
+            <div className="brand">
+              <img src="/logo.png" alt="Tiffany Rose Coaching" />
+              <div><span className="eyebrow">Tiffany Rose Coaching</span><h1>Webinar dashboard</h1></div>
+            </div>
+            <div className="meta">
+              <span>{lastOk ? `Updated ${dateTime(lastOk)}` : "Not synced yet"}</span>
+              <form method="post" action="/api/sync"><button className="primary" type="submit">Sync now</button></form>
+              <form method="post" action="/api/logout"><button type="submit">Log out</button></form>
+            </div>
           </div>
-          <nav className="seg row" style={{ gap: 0 }} aria-label="Date range">
-            {RANGES.map((r) => (
-              <a key={r} href={link({ days: r })} className={!custom && r === days ? "active" : ""}>{r === 7 ? "7 days" : `${r} days`}</a>
-            ))}
-          </nav>
-          <form method="get" action="/" className={`range-form${custom ? " active" : ""}`} aria-label="Custom dates">
-            <input type="date" name="from" defaultValue={fromYmd} max={today} required aria-label="From" />
-            <span className="muted small">to</span>
-            <input type="date" name="to" defaultValue={toYmd} max={today} required aria-label="To" />
-            {cmp === "final" && <input type="hidden" name="cmp" value="final" />}
-            <button type="submit">Apply</button>
-          </form>
+          <div className="bar-filters">
+            <nav className="seg" aria-label="Date range">
+              {RANGES.map((r) => <a key={r} href={link({ days: r })} className={!custom && r === days ? "active" : ""}>{r} days</a>)}
+            </nav>
+            <form method="get" action="/" className={`range-form${custom ? " active" : ""}`} aria-label="Custom dates">
+              <input type="date" name="from" defaultValue={fromYmd} max={today} required aria-label="From" />
+              <span className="muted small">to</span>
+              <input type="date" name="to" defaultValue={toYmd} max={today} required aria-label="To" />
+              {cmp === "final" && <input type="hidden" name="cmp" value="final" />}
+              <button type="submit">Apply</button>
+            </form>
+          </div>
+          <p className="summary">
+            Showing <b>{periodLabel}</b> · compared with <b>{shortDay(shiftDays(fromYmd, -days))} – {shortDay(prevToYmd)}</b> · times Pacific
+          </p>
         </div>
-        <div className="row">
-          <span className="small muted">{lastOk ? `Updated ${dateTime(lastOk)}` : "Not synced yet"}</span>
-          <form method="post" action="/api/sync"><button className="primary" type="submit">Sync now</button></form>
-          <form method="post" action="/api/logout"><button type="submit">Log out</button></form>
-        </div>
-      </header>
+      </div>
 
-      {(stale || failedSources.length > 0 || sp.synced === "error") && (
-        <div className="notice err">
-          {stale && <div>Data is more than 36 hours old. Press <b>Sync now</b>; if that fails, check the sync status at the bottom of the page.</div>}
-          {failedSources.length > 0 && <div>Last sync failed for: {failedSources.join(", ")}. Details at the bottom of the page.</div>}
-        </div>
-      )}
+      <main>
+        {sp.synced === "error" && <div className="notice err">The sync you just ran failed for at least one source. See Sync status at the bottom.</div>}
 
-      <section>
-        <h2>Ads <span className="muted small">· {periodLabel}</span></h2>
-        <div className="grid g2">
-          <Card n={1} title="Ad spend" value={adNone ? "—" : usd(totals.ad_spend)}
-            sub={adFromSheet || !metaOn ? "webinar campaigns · from the team's tracker sheet (FB Stats)" : "Meta Ads, webinar campaigns"}
-            help="Facebook spend on the webinar campaigns in the selected period. From Meta when connected, otherwise from the team's tracker sheet." state={adState}
-            delta={adNone || adStale ? undefined : <Delta cur={cur.adSpend} prev={prev.adSpend} kind="count" better="neither" label={vsLabel} />} />
-          <Card n={3} title="Registration rate" value={pct(totals.registrants_on_ad_days, regDenom.n)}
-            sub={`${num(totals.registrants_on_ad_days)} registrants · ${num(regDenom.n)} ${regDenom.label}${totals.registrants_on_ad_days < totals.registrants ? " (days with ad data only)" : ""}`}
-            help={`Registrants ÷ ${regDenom.label}, counting only days that have ad data. Landing page views come with the Meta connection; until then the tracker sheet's link clicks are used.`} state={adState}
-            delta={<Delta cur={cur.regRate} prev={prev.regRate} kind="rate" label={vsLabel} />} />
+        <div className="glance">
+          <Card big title="Cost per registrant" value={adNone || cur.costPerReg === null ? "—" : usd(cur.costPerReg, 2)}
+            target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerReg} warn={adWarn}
+            sub={`${usd(totals.ad_spend)} ad spend ÷ ${num(totals.registrants_on_ad_days)} sign-ups`}
+            info={<><p>Ad spend ÷ the people who signed up for a webinar, on days that have ad data.</p><p>Each person counts once per period, whichever session they picked.</p></>}
+            delta={<Delta cur={cur.costPerReg} prev={prev.costPerReg} kind="count" better="down" label={vsLabel} money />} />
+          <Card big title="Webinar attendance" value={pctOf(cur.attendance)} target={tgt(t.attendanceRate, "%")} flag={f.attendance}
+            sub={`${num(cur.attendees)} of ${num(cur.attRegs)} registered`}
+            info={<p>People who showed up ÷ people registered for that webinar, for webinars held in this period. From Zoom (Tiffany&apos;s room) when it has the webinar, otherwise the show-ups the team types into the tracker.</p>}
+            delta={<Delta cur={cur.attendance} prev={prev.attendance} kind="rate" label={vsLabel} />} />
+          <Card big title="Onboarding show rate" value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
+            sub={`${num(funnel.onb_attended)} of ${num(cur.onbKnown)} calls with a result`}
+            warn={onbUnknown ? `${num(onbUnknown)} without a result` : undefined}
+            info={<p>Leap Welcome calls (and their reschedules) in this period: showed ÷ calls with a result. A call is showed when it&apos;s marked so in GHL or the Zoom call had two or more people.</p>}
+            delta={<Delta cur={cur.showRate} prev={prev.showRate} kind="rate" label={vsLabel} />} />
+          <Card big title="Call → high ticket" value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
+            sub={`${num(funnel.ht_after_onb_attended)} high-ticket buyers of ${num(funnel.onb_attended)} who showed`}
+            info={<p>People who bought Ignite or Mastermind on Whop after showing to an onboarding call, ÷ people who showed to one, in this period.</p>}
+            delta={<Delta cur={cur.callToHt} prev={prev.callToHt} kind="rate" label={vsLabel} />} />
+          <Card big title="High-ticket cash" value={usd(funnel.ht_cash)} target={tgt(t.roasMin, "x")} flag={f.roas}
+            sub={`${times(cur.roas)} per $1 of ad spend`}
+            info={<p>Whop cash for Ignite and Mastermind, net of refunds, by payment date. Its target is cash per $1 of ad spend (&quot;KPI Min ROAS&quot;).</p>}
+            delta={<Delta cur={cur.htCash} prev={prev.htCash} kind="count" label={vsLabel} money />} />
         </div>
-        {weekRows.map((w) => {
-          const spend = w.sessions.reduce((t, x) => t + (Number(x.ad_spend) || 0), 0);
-          const lastSpend = lastWeek.reduce((t, x) => t + (Number(x.ad_spend) || 0), 0);
-          const weekComplete = spendComplete(sum(w.sessions, "reg_rows"), sum(w.sessions, "covered_rows"));
-          const lastWeekComplete = spendComplete(sum(lastWeek, "reg_rows"), sum(lastWeek, "covered_rows"));
-          return (
-            <div key={w.label} className="week">
-              <div className="row spread week-head">
-                <h3>{w.label} <span className="muted small">· {w.range}</span></h3>
-                {w.compare && (
-                  <nav className="seg small-seg" aria-label="Compare this week with">
-                    <span className="muted small">Compare with</span>
-                    <a href={link({ cmp: "point" })} className={cmp === "point" ? "active" : ""}>Same point last week</a>
-                    <a href={link({ cmp: "final" })} className={cmp === "final" ? "active" : ""}>Last week&apos;s final</a>
-                  </nav>
-                )}
-              </div>
-              <div className={`grid ${w.sessions.length + 1 >= 4 ? "g4" : "g3"}`}>
-                {w.sessions.length === 0 && <div className="card metric"><div className="metric-title">No webinars this week</div></div>}
-                {w.sessions.map((x) => {
-                  const ago = sameDayLastWeek(x);
-                  const state = x.session_at > now ? (laDay(x.session_at) === today ? "today" : "upcoming") : (laDay(x.session_at) === today ? "today" : "held");
-                  return (
-                    <div key={x.session_at.toISOString()} className="card metric"
-                      title="Unique people registered for this webinar (all registrations, whenever they signed up). Cost per registrant: Meta spend on the days they signed up, split across that day's registrations.">
-                      <div className="metric-head">
-                        <span className="tag">2</span><span className="metric-title">{sessionDay(x.session_at)}</span>
-                        <span className={`state ${state}`}>{state === "today" ? "today" : state === "upcoming" ? "upcoming" : "held"}</span>
+
+        {warnings.length > 0 && (
+          <details className="warn-panel">
+            <summary>{warnings.length} thing{warnings.length === 1 ? "" : "s"} that make these numbers less exact</summary>
+            <ul>{warnings.map((w) => <li key={w}>{w}</li>)}</ul>
+          </details>
+        )}
+
+        <Section title="Ads" intro={<>Facebook ads for the webinar, {periodLabel}. {metaOn ? "From Meta." : "From the team's tracker (FB Stats, the Standout campaigns) until Meta is connected."}</>}>
+          <div className="grid g4">
+            <Card title="Ad spend" value={adNone ? "—" : usd(totals.ad_spend)} warn={adWarn} needs={adOn ? undefined : "Meta or the tracker"}
+              sub={metaOn ? "Meta, webinar campaigns" : "tracker sheet, FB Stats"}
+              delta={adNone || adStale ? undefined : <Delta cur={cur.adSpend} prev={prev.adSpend} kind="count" better="neither" label={vsLabel} money />} />
+            <Card title="CPC" value={usd(cur.cpc, 2)} sub={`${num(totals.link_clicks)} link clicks`}
+              info={<p>Ad spend ÷ link clicks (Meta&apos;s cost per link click).</p>}
+              delta={<Delta cur={cur.cpc} prev={prev.cpc} kind="count" better="down" label={vsLabel} money />} />
+            <Card title="Outbound CTR" value={pctOf(cur.outCtr, 2)} sub={`${num(totals.outbound_clicks)} outbound clicks · ${num(totals.impressions)} views`}
+              info={<p>Clicks that left Facebook for the landing page ÷ times the ads were shown.</p>}
+              delta={<Delta cur={cur.outCtr} prev={prev.outCtr} kind="rate" label={vsLabel} />} />
+            <Card title="Registrations" value={num(cur.signups)} sub="people who signed up in these dates"
+              info={<p>Unique people who filled out the webinar form in this period (GHL), whichever session they picked.</p>}
+              delta={<Delta cur={cur.signups} prev={prev.signups} kind="count" label={vsLabel} />} />
+            <Card n={2} title="Opt-in rate" value={pctOf(cur.optIn)} target={tgt(t.registrationRate, "%")} flag={f.optIn}
+              sub={`${num(totals.registrants_on_ad_days)} sign-ups ÷ ${num(totals.landing_page_views || totals.link_clicks)} ${clicksLabel}`}
+              info={<p>Sign-ups ÷ {clicksLabel}, counting only days that have ad data. Landing page views come with Meta; until then link clicks are used, as the tracker does.</p>}
+              delta={<Delta cur={cur.optIn} prev={prev.optIn} kind="rate" label={vsLabel} />} />
+            <Card n={1} title="Cost per opt-in" value={adNone || cur.costPerReg === null ? "—" : usd(cur.costPerReg, 2)} target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerReg}
+              sub="ad spend ÷ sign-ups on days with ad data" warn={adWarn}
+              delta={<Delta cur={cur.costPerReg} prev={prev.costPerReg} kind="count" better="down" label={vsLabel} money />} />
+            <Card title="Registered" value={num(cur.registered)} sub={`for the ${held.length} webinar${held.length === 1 ? "" : "s"} held in these dates`}
+              info={<p>Unique people registered for each webinar held in this period, added up across webinars (someone registered for two counts twice).</p>}
+              delta={<Delta cur={cur.registered} prev={prev.registered} kind="count" label={vsLabel} />} />
+          </div>
+
+          {weekRows.map((w) => {
+            const spend = w.sessions.reduce((a, x) => a + (Number(x.ad_spend) || 0), 0);
+            const lastSpend = lastWeek.reduce((a, x) => a + (Number(x.ad_spend) || 0), 0);
+            const weekComplete = spendComplete(sum(w.sessions, "reg_rows"), sum(w.sessions, "covered_rows"));
+            const lastWeekComplete = spendComplete(sum(lastWeek, "reg_rows"), sum(lastWeek, "covered_rows"));
+            const incomplete = <span className="pill warn">Cost per registrant: ad spend missing for some sign-up days</span>;
+            return (
+              <div key={w.label} className="week">
+                <div className="row spread week-head">
+                  <h3>{w.label} <span className="muted small">· {w.range}</span></h3>
+                  {w.compare && (
+                    <nav className="seg small-seg" aria-label="Compare this week with">
+                      <span className="muted small">Compare with</span>
+                      <a href={link({ cmp: "point" })} className={cmp === "point" ? "active" : ""}>Same point last week</a>
+                      <a href={link({ cmp: "final" })} className={cmp === "final" ? "active" : ""}>Last week&apos;s final</a>
+                    </nav>
+                  )}
+                </div>
+                <div className={`grid ${w.sessions.length + 1 >= 4 ? "g4" : "g3"}`}>
+                  {w.sessions.length === 0 && <div className="card metric"><div className="metric-title">No webinars this week</div></div>}
+                  {w.sessions.map((x) => {
+                    const ago = sameDayLastWeek(x);
+                    const state = laDay(x.session_at) === today ? "today" : x.session_at > now ? "upcoming" : "held";
+                    return (
+                      <div key={x.session_at.toISOString()} className="card metric">
+                        <div className="metric-head">
+                          <span className="metric-title">{sessionDay(x.session_at)}</span>
+                          <span className={`state ${state}`}>{state}</span>
+                        </div>
+                        <div className="metric-value">{num(x.registrants)}<span className="unit"> registered{state !== "held" ? " so far" : ""}</span></div>
+                        {w.compare && ago && (() => {
+                          const ref = cmp === "final" ? ago.registrants : (lastWeekAsOf.bySession.find((y) => +y.session_at === +ago.session_at)?.registrants ?? 0);
+                          return <Delta cur={x.registrants} prev={ref} kind="count"
+                            label={cmp === "final" ? `vs final for ${shortDate(ago.session_at)}` : `vs ${shortDate(ago.session_at)} at this point last week`} />;
+                        })()}
+                        <div className="metric-sub">
+                          {!spendComplete(x.reg_rows, x.covered_rows) ? incomplete
+                            : <span><b className="strong">{usd(div(x.ad_spend, x.registrants), 2)}</b> per registrant · {usd(x.ad_spend)} spend</span>}
+                          {x.attendees !== null && <span>{num(x.attendees)} attended ({pct(x.attendees, x.registrants)}){x.stayed_to_pitch !== null ? ` · ${pct(x.stayed_to_pitch, x.attendees)} stayed to pitch` : ""} · {x.attendance_source === "zoom" ? "Zoom" : "tracker"}</span>}
+                          {w.compare && ago && spendComplete(x.reg_rows, x.covered_rows) && spendComplete(ago.reg_rows, ago.covered_rows) &&
+                            <Delta cur={div(x.ad_spend, x.registrants)} prev={div(ago.ad_spend, ago.registrants)} kind="count" better="down" label="cost per registrant" money />}
+                        </div>
                       </div>
-                      <div className="metric-value">{num(x.registrants)}<span className="unit"> registrants{state !== "held" ? " so far" : ""}</span></div>
-                      {w.compare && ago && (() => {
-                        const ref = cmp === "final" ? ago.registrants : (lastWeekAsOf.bySession.find((y) => +y.session_at === +ago.session_at)?.registrants ?? 0);
-                        return <Delta cur={x.registrants} prev={ref} kind="count"
-                          label={cmp === "final" ? `vs ${num(ref)} final for ${shortDate(ago.session_at)}` : `vs ${num(ref)} for ${shortDate(ago.session_at)} at this point last week`} />;
-                      })()}
-                      <div className="metric-sub">
-                        {!adOn ? <span className="pill">Cost per registrant: connect Meta Ads</span>
-                          : !spendComplete(x.reg_rows, x.covered_rows) ? incomplete
-                          : <span><b className="strong">{usd(div(x.ad_spend, x.registrants), 2)}</b> per registrant · {usd(x.ad_spend)} spend</span>}
-                        {adOn && w.compare && ago && spendComplete(x.reg_rows, x.covered_rows) && spendComplete(ago.reg_rows, ago.covered_rows) &&
-                          <Delta cur={div(x.ad_spend, x.registrants)} prev={div(ago.ad_spend, ago.registrants)} kind="count" better="down" label="cost per registrant" />}
-                      </div>
+                    );
+                  })}
+                  <div className="card metric total">
+                    <div className="metric-head"><span className="metric-title">{w.label} total</span>
+                      <Info label={`${w.label} total`}><p>Unique people registered for any of this week&apos;s webinars: someone in both counts once, so this can be less than the cards added up.</p></Info></div>
+                    <div className="metric-value">{num(w.people)}<span className="unit"> registered</span></div>
+                    {w.compare && (() => {
+                      const ref = cmp === "final" ? lastWeekPeople : lastWeekAsOf.total;
+                      return <Delta cur={w.people} prev={ref} kind="count" label={cmp === "final" ? "vs last week (final)" : "vs last week at this point"} />;
+                    })()}
+                    <div className="metric-sub">
+                      {!weekComplete ? incomplete : <span><b className="strong">{usd(div(spend, w.people), 2)}</b> per registrant · {usd(spend)} spend</span>}
+                      {w.compare && weekComplete && lastWeekComplete &&
+                        <Delta cur={div(spend, w.people)} prev={div(lastSpend, lastWeekPeople)} kind="count" better="down" label="cost per registrant" money />}
                     </div>
-                  );
-                })}
-                <div className="card metric total" title="Unique people registered for any of this week's webinars: someone in both counts once, so this can be less than the cards added up.">
-                  <div className="metric-head"><span className="tag">2</span><span className="metric-title">{w.label} total</span></div>
-                  <div className="metric-value">{num(w.people)}<span className="unit"> registrants</span></div>
-                  {w.compare && (() => {
-                    const ref = cmp === "final" ? lastWeekPeople : lastWeekAsOf.total;
-                    return <Delta cur={w.people} prev={ref} kind="count" label={cmp === "final" ? `vs ${num(ref)} last week (final)` : `vs ${num(ref)} last week at this point`} />;
-                  })()}
-                  <div className="metric-sub">
-                    {!adOn ? <span className="pill">Cost per registrant: connect Meta Ads</span>
-                      : !weekComplete ? incomplete
-                      : <span><b className="strong">{usd(div(spend, w.people), 2)}</b> per registrant · {usd(spend)} spend</span>}
-                    {adOn && w.compare && weekComplete && lastWeekComplete &&
-                      <Delta cur={div(spend, w.people)} prev={div(lastSpend, lastWeekPeople)} kind="count" better="down" label="cost per registrant" />}
                   </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </section>
+            );
+          })}
+        </Section>
 
-      <section>
-        <h2>Webinar <span className="muted small">· {held.length} session{held.length === 1 ? "" : "s"} held · {periodLabel}</span></h2>
-        <div className="grid g3">
-          <Card n={4} title="Attendance rate" value={pct(attendees, regsWithAtt)}
-            sub={`${num(attendees)} of ${num(regsWithAtt)} registrants${attFromTracker ? " · show-ups from the team's tracker sheet" : ""}`}
-            help="People who showed up ÷ people registered for that webinar. From Zoom when connected, otherwise the show-ups the team enters in the tracker sheet."
-            state={withAtt.length ? {} : { needs: "Zoom" }}
-            delta={<Delta cur={cur.attendance} prev={prev.attendance} kind="rate" label={vsLabel} />} />
-          <Card n={5} title={`Stayed to pitch`} value={pct(sum(withZoom, "stayed_to_pitch"), zoomAttendees)}
-            sub={`still on at ${PITCH_MINUTE} min`}
-            help={`Attendees still in the webinar ${PITCH_MINUTE} minutes after it started ÷ attendees.`} state={needZoom}
-            delta={<Delta cur={cur.stayed} prev={prev.stayed} kind="rate" label={vsLabel} />} />
-          <Card n={6} title="Buyers from webinar" value={num(sum(held, "buyers"))}
-            sub={`of ${num(regsHeld)} registrations`}
-            help="People who bought on Whop after registering for one of these sessions."
-            delta={<Delta cur={cur.buyers} prev={prev.buyers} kind="count" label={vsLabel} />} />
-          <Card n={7} title="$ from webinar" value={usd(sum(held, "cash"))}
-            sub="cash collected, net of refunds"
-            help="Whop cash from buyers attributed to these sessions."
-            delta={<Delta cur={cur.cash} prev={prev.cash} kind="count" label={vsLabel} />} />
-          <div className="card metric" title="The $97 lead magnet sold on the webinar, as the team records it in the tracker sheet (it is processed in an account this dashboard cannot reach). Not included in $ from webinar.">
-            <div className="metric-head"><span className="metric-title">$97 lead-magnet sales</span></div>
-            <div className="metric-value">{usd(cur.lmCash)}</div>
-            <Delta cur={cur.lmCash} prev={prev.lmCash} kind="count" label={vsLabel} />
-            <div className="metric-sub">{num(sum(held, "lm_purchases"))} sales · from the team&apos;s tracker sheet</div>
+        <Section title="Webinar" intro={<>The {held.length} webinar{held.length === 1 ? "" : "s"} held in {periodLabel}. Buyers belong to the last webinar they registered for before paying.</>}>
+          <div className="grid g4">
+            <Card n={3} title="Attendance rate" value={pctOf(cur.attendance)} target={tgt(t.attendanceRate, "%")} flag={f.attendance}
+              sub={`${num(cur.attendees)} of ${num(cur.attRegs)} registered${fromTracker ? ` · ${fromTracker} from the tracker` : ""}`}
+              needs={withAtt.length ? undefined : "Zoom or the tracker"}
+              delta={<Delta cur={cur.attendance} prev={prev.attendance} kind="rate" label={vsLabel} />} />
+            <Card n={4} title="Stayed to pitch" value={pctOf(cur.stayed)} target={tgt(t.stayedRate, "%")} flag={f.stayed}
+              sub={`still on ${PITCH_MINUTE} min in · ${withZoom.length} Zoom webinar${withZoom.length === 1 ? "" : "s"}`}
+              needs={withZoom.length ? undefined : "a Zoom webinar in these dates (from Nov 12)"}
+              info={<p>Attendees still in Tiffany&apos;s Zoom room {PITCH_MINUTE} minutes after the start ÷ attendees. Zoom only: the tracker has counts, not who stayed.</p>}
+              delta={<Delta cur={cur.stayed} prev={prev.stayed} kind="rate" label={vsLabel} />} />
+            <Card n={5} title="Buyers from webinar" value={num(cur.buyers)} sub={`of ${num(cur.registered)} registered · Whop`}
+              info={<p>People who paid on Whop after registering for one of these webinars (any product), each counted once.</p>}
+              delta={<Delta cur={cur.buyers} prev={prev.buyers} kind="count" label={vsLabel} />} />
+            <Card n={6} title="$ from webinar" value={usd(cur.cash)} sub="Whop cash from those buyers, net of refunds"
+              delta={<Delta cur={cur.cash} prev={prev.cash} kind="count" label={vsLabel} money />} />
+            <Card n={7} title="Attendee → buyer" value={pctOf(cur.attBuyer)} target={tgt(t.webinarConversion, "%")} flag={f.attBuyer}
+              sub="attended in Zoom, then bought on Whop" needs={withZoom.length ? undefined : "a Zoom webinar in these dates (from Nov 12)"}
+              info={<p>Attendees (Zoom, matched by email) who bought on Whop ÷ attendees. Zoom only: the tracker&apos;s show-ups have no names.</p>}
+              delta={<Delta cur={cur.attBuyer} prev={prev.attBuyer} kind="rate" label={vsLabel} />} />
+            <Card title="$97 sales on the webinar" value={usd(cur.lmCash)} sub={`${num(cur.lmBuys)} sales · ${pctOf(rate(cur.lmBuys, cur.attendees))} of attendees · tracker`}
+              info={<p>The $97 offer sold on the webinar, as the team records it in the tracker (it&apos;s processed in an account this dashboard can&apos;t reach). Not part of $ from webinar.</p>}
+              delta={<Delta cur={cur.lmCash} prev={prev.lmCash} kind="count" label={vsLabel} money />} />
           </div>
-          <Card n={8} title="Attendee → buyer" value={pct(sum(withZoom, "attendee_buyers"), zoomAttendees)}
-            sub="webinar conversion rate"
-            help="Attendees who bought ÷ attendees." state={needZoom}
-            delta={<Delta cur={cur.attBuyer} prev={prev.attBuyer} kind="rate" label={vsLabel} />} />
-        </div>
-      </section>
+          {upcoming.length > 0 && (
+            <p className="small muted">Next: {upcoming.map((s) => `${sessionLabel(s.session_at)} (${num(s.registrants)} registered)`).join(" · ")}</p>
+          )}
+        </Section>
 
-      <section>
-        <h2>Onboarding calls <span className="muted small">· Leap Welcome Calls · {periodLabel}</span></h2>
-        <div className="grid g4">
-          <Card n={9} title="Calls attended" value={num(funnel.onb_attended)}
-            sub={`of ${num(funnel.onb_booked)} booked`}
-            help="Onboarding calls where the person showed up (GHL 'showed' mark, or the Zoom report once connected)."
-            state={onbWarn} delta={<Delta cur={cur.onbAttended} prev={prev.onbAttended} kind="count" label={vsLabel} />} />
-          <Card n={10} title="Show rate" value={onbKnown > 0 ? pct(funnel.onb_attended, onbKnown) : "—"}
-            sub={onbKnown > 0 ? `of ${num(onbKnown)} calls with a known result` : "no results recorded yet"}
-            help="Attended ÷ booked calls whose result is known."
-            state={onbKnown < funnel.onb_unknown
-              ? { warn: `Unreliable: only ${num(onbKnown)} of ${num(funnel.onb_booked)} calls have a result${zoomOn ? "" : " until Zoom is connected"}` }
-              : onbWarn}
-            delta={<Delta cur={cur.showRate} prev={prev.showRate} kind="rate" label={vsLabel} />} />
-          <Card n={11} title="High-ticket buyers from calls" value={num(funnel.ht_after_onb_attended)}
-            sub={`of ${num(funnel.ht_buyers)} high-ticket buyers`}
-            help="Ignite or Mastermind buyers in the period who attended an onboarding call before paying."
-            delta={<Delta cur={cur.htFromCalls} prev={prev.htFromCalls} kind="count" label={vsLabel} />} />
-          <Card n={12} title="Call → high-ticket %" value={pct(funnel.ht_after_onb_attended, funnel.onb_attended)}
-            sub="of attended calls"
-            help="High-ticket buyers who attended a call ÷ calls attended."
-            delta={<Delta cur={cur.callToHt} prev={prev.callToHt} kind="rate" label={vsLabel} />} />
-        </div>
-      </section>
-
-      <section>
-        <h2>Cash <span className="muted small">· {periodLabel}</span></h2>
-        <div className="grid g4">
-          <Card n={13} title="High-ticket cash collected" value={usd(funnel.ht_cash)}
-            sub={`Ignite + Mastermind · all Whop ${usd(totals.cash_all)}`}
-            help="Whop cash for Ignite and Mastermind offers, net of refunds, by payment date."
-            delta={<Delta cur={cur.htCash} prev={prev.htCash} kind="count" label={vsLabel} />} />
-          <Card n={14} title="Paid in full" value={pct(funnel.ht_pif, funnel.ht_purchases)}
-            sub={`${num(funnel.ht_pif)} PIF · ${num(funnel.ht_financing)} financing · ${num(funnel.ht_plan)} plan`}
-            help="High-ticket purchases paid in full (card/PayPal within 7 days) ÷ all high-ticket purchases."
-            delta={<Delta cur={cur.pif} prev={prev.pif} kind="rate" label={vsLabel} />} />
-          <div className="card metric" title="Whop checkouts that failed or were abandoned. Each person counts once.">
-            <div className="metric-head"><span className="metric-title">Failed / abandoned checkouts</span></div>
-            <div className="metric-value">{num(totals.failed.people)}</div>
-            <Delta cur={cur.failed} prev={prev.failed} kind="count" better="down" label={vsLabel} />
-            <div className="metric-sub">{usd(totals.failed.attempted_usd)} attempted · {num(totals.failed.recovered_people)} paid later</div>
-          </div>
-          <div className="card metric">
-            <div className="metric-head"><span className="metric-title">Offer mix</span></div>
-            <table className="mini">
-              <tbody>
+        <Section title="Onboarding calls and high ticket" intro={<>Leap Welcome calls (and reschedules) by the day of the call; high-ticket sales (Ignite, Mastermind) from Whop by payment date.</>}>
+          <div className="grid g4">
+            <Card n={8} title="Onboarding calls attended" value={num(funnel.onb_attended)} sub={`of ${num(funnel.onb_booked)} booked`}
+              warn={onbUnknown ? `${num(onbUnknown)} without a result` : undefined}
+              delta={<Delta cur={cur.onbAttended} prev={prev.onbAttended} kind="count" label={vsLabel} />} />
+            <Card n={9} title="Onboarding show rate" value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
+              sub={`of ${num(cur.onbKnown)} calls with a result`}
+              delta={<Delta cur={cur.showRate} prev={prev.showRate} kind="rate" label={vsLabel} />} />
+            <Card n={10} title="High-ticket buyers from calls" value={num(funnel.ht_after_onb_attended)} sub={`of ${num(funnel.ht_buyers)} high-ticket buyers`}
+              info={<p>Ignite or Mastermind buyers in this period who showed to an onboarding call before paying.</p>}
+              delta={<Delta cur={cur.htFromCalls} prev={prev.htFromCalls} kind="count" label={vsLabel} />} />
+            <Card n={11} title="Call → high ticket" value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
+              sub="of people who showed to a call"
+              delta={<Delta cur={cur.callToHt} prev={prev.callToHt} kind="rate" label={vsLabel} />} />
+            <Card n={12} title="High-ticket cash collected" value={usd(funnel.ht_cash)} sub={`all Whop: ${usd(totals.cash_all)}`}
+              delta={<Delta cur={cur.htCash} prev={prev.htCash} kind="count" label={vsLabel} money />} />
+            <Card n={13} title="Paid in full" value={pctOf(cur.pif)} target={tgt(t.pifRate, "%")} flag={f.pif}
+              sub={`${num(funnel.ht_pif)} PIF · ${num(funnel.ht_financing)} third-party financing · ${num(funnel.ht_plan)} payment plan`}
+              info={<p>High-ticket purchases paid in full (card or PayPal, all within 7 days of the first payment; deposit + balance counts) ÷ all high-ticket purchases. Third-party financing = Sezzle, Klarna, Afterpay, ClarityPay, Splitit. Payment plan = Whop splits it.</p>}
+              delta={<Delta cur={cur.pif} prev={prev.pif} kind="rate" label={vsLabel} />} />
+            <Card title="Failed / abandoned checkouts" value={num(totals.failed.people)}
+              sub={`${usd(totals.failed.attempted_usd)} attempted · ${num(totals.failed.recovered_people)} paid later`}
+              info={<p>Whop checkouts that failed or were left unfinished (most are declined financing applications). Each person counts once, at their largest attempt.</p>}
+              delta={<Delta cur={cur.failed} prev={prev.failed} kind="count" better="down" label={vsLabel} />} />
+            <div className="card metric">
+              <div className="metric-head"><span className="metric-title">Offer mix</span></div>
+              <table className="mini"><tbody>
                 {totals.by_group.length === 0 && <tr><td className="muted">No purchases</td></tr>}
                 {totals.by_group.map((g) => (
                   <tr key={`${g.product_group}-${g.payment_type}`}>
                     <td>{GROUP_LABEL[g.product_group] ?? g.product_group} · {TYPE_LABEL[g.payment_type] ?? g.payment_type}</td>
-                    <td>{num(g.purchases)}</td>
-                    <td>{usd(g.cash)}</td>
+                    <td>{num(g.purchases)}</td><td>{usd(g.cash)}</td>
+                  </tr>
+                ))}
+              </tbody></table>
+            </div>
+          </div>
+        </Section>
+
+        <Section title="Retention and unit economics">
+          <div className="grid g4">
+            <Card n={14} title="Churn" value="—" needs="Kajabi" target={tgt(t.churnMax, "%", true)} />
+            <Card n={15} title="LTV : CAC" value={cur.ltvCac === null ? "—" : `${cur.ltvCac.toFixed(1)} : 1`} target={tgt(t.ltvCacMin, "x")} flag={f.ltvCac}
+              sub={`LTV ${usd(ltv.ltv)} · CAC ${usd(ltv.cac)}`}
+              info={<><p><b>LTV</b>: the Whop cash a high-ticket buyer has paid so far, on average ({num(ltv.ltv_buyers)} buyers to date).</p><p><b>CAC</b>: ad spend in this period ÷ new high-ticket buyers in this period ({num(ltv.new_buyers)}).</p><p>Churn (Kajabi) isn&apos;t in it yet.</p></>}
+              delta={<Delta cur={cur.ltvCac} prev={prev.ltvCac} kind="count" label={vsLabel} />} />
+            <Card title="Cost per high-ticket buyer" value={usd(cur.cac)} target={tgt(t.costPerCloseMax, "$", true)} flag={f.cac}
+              sub={`${usd(totals.ad_spend)} ÷ ${num(ltv.new_buyers)} new buyers`} warn={adWarn}
+              delta={<Delta cur={cur.cac} prev={prev.cac} kind="count" better="down" label={vsLabel} money />} />
+            <Card title="Cash per $1 of ads" value={times(cur.roas)} target={tgt(t.roasMin, "x")} flag={f.roas}
+              sub="high-ticket cash ÷ ad spend" warn={adWarn}
+              delta={<Delta cur={cur.roas} prev={prev.roas} kind="count" label={vsLabel} />} />
+          </div>
+        </Section>
+
+        <Section title="Daily ad spend and sign-ups" intro="Ad spend each day next to webinar sign-ups and attendance, to see whether more spend brings more people. Hover a day for its numbers.">
+          <DailyChart days={dayRows} />
+        </Section>
+
+        <Section title="16 · Results by ad"
+          intro={<>Everyone who signed up in these dates, by the ad in their link (campaign / ad set / ad), and what they did since. {metaOn
+            ? `Verdict: Cut = ${usd(2 * (t.costPerCloseMax ?? 3000))} spent with no high-ticket buyer; Scale = 2+ high-ticket buyers at ${usd(t.costPerCloseMax ?? 3000)} or less each; Too early = under ${usd(t.costPerCloseMax ?? 3000)} spent.`
+            : "Spend, cost per registrant and the cut / scale call per ad arrive with the Meta token."} Attended and stayed come from Zoom (Nov 12 on).</>}>
+          <div className="table-wrap">
+            <table className="ads-table">
+              <thead>
+                <tr>
+                  <th>Ad</th><th>Verdict</th><th>Spend</th><th>Registered</th><th>Cost / registrant</th><th>Attended</th><th>Stayed to pitch</th>
+                  <th>Bought (Whop)</th><th>High-ticket buyers</th><th>High-ticket cash</th><th>Cost / HT buyer</th><th>Cash per $1</th><th>CTR</th><th>Views / person (7d)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {adRows.length === 0 && <tr><td colSpan={14} className="muted">No sign-ups in these dates.</td></tr>}
+                {adRows.map((r) => {
+                  const v = verdict(r, t);
+                  const unknown = !r.ad && !r.adset && !r.campaign;
+                  return (
+                    <tr key={`${r.campaign}|${r.adset}|${r.ad}`}>
+                      <td className="ad-cell">
+                        {r.thumbnail ? <img src={r.thumbnail} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
+                        <span><b>{unknown ? "No ad in the link" : r.ad ?? "—"}</b>
+                          <span className="muted small">{unknown ? "organic, email, SMS or a link without UTMs" : [r.adset, r.campaign].filter(Boolean).join(" · ")}{r.status ? ` · ${r.status.toLowerCase()}` : ""}</span></span>
+                      </td>
+                      <td>{v ? <span className={`v ${v.key}`} title={v.why}>{v.label}</span> : <span className="muted">—</span>}</td>
+                      <td>{r.spend === null ? <span className="muted">—</span> : usd(r.spend)}</td>
+                      <td>{num(r.registrants)}</td>
+                      <td>{r.spend !== null && r.registrants ? usd(r.spend / r.registrants, 2) : <span className="muted">—</span>}</td>
+                      <td>{num(r.attended)}</td>
+                      <td>{num(r.stayed)}</td>
+                      <td>{num(r.buyers)}</td>
+                      <td>{num(r.ht_buyers)}</td>
+                      <td>{usd(r.ht_cash)}</td>
+                      <td>{r.spend !== null && r.ht_buyers ? usd(r.spend / r.ht_buyers) : <span className="muted">—</span>}</td>
+                      <td>{r.spend ? times(r.ht_cash / r.spend) : <span className="muted">—</span>}</td>
+                      <td>{r.impressions ? pctOf((r.link_clicks ?? 0) / r.impressions, 2) : <span className="muted">—</span>}</td>
+                      <td className={r.frequency_7d && r.frequency_7d > 3 ? "bad" : ""}>{r.frequency_7d ? r.frequency_7d.toFixed(1) : <span className="muted">—</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+
+        <Section title="Webinars, one by one" intro="Each webinar held in these dates. Spend per webinar splits each day's spend across the webinars people signed up for that day.">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Webinar</th><th>Registered</th><th>Spend</th><th>Cost / reg</th><th>Attended</th><th>Stayed</th>
+                  <th>Buyers</th><th>Cash</th><th>$97 sales</th><th>Onboarding showed</th><th>HT cash</th><th>PIF</th>
+                </tr>
+              </thead>
+              <tbody>
+                {held.length === 0 && <tr><td colSpan={12} className="muted">No webinars in these dates.</td></tr>}
+                {held.map((s) => (
+                  <tr key={s.session_at.toISOString()}>
+                    <td>{sessionLabel(s.session_at)}</td>
+                    <td>{num(s.registrants)}</td>
+                    <td>{spendComplete(s.reg_rows, s.covered_rows) ? usd(s.ad_spend) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
+                    <td>{spendComplete(s.reg_rows, s.covered_rows) ? usd(div(s.ad_spend, s.registrants), 2) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
+                    <td>{s.attendees === null ? "—" : <>{num(s.attendees)} · {pct(s.attendees, s.registrants)} <span className="muted small">{s.attendance_source === "zoom" ? "Zoom" : "tracker"}</span></>}</td>
+                    <td>{s.stayed_to_pitch === null ? "—" : pct(s.stayed_to_pitch, s.attendees)}</td>
+                    <td>{num(s.buyers)}</td>
+                    <td>{usd(s.cash)}</td>
+                    <td>{s.lm_purchases ? `${num(s.lm_purchases)} · ${usd(s.lm_cash)}` : "—"}</td>
+                    <td>{num(s.onb_attended)} <span className="muted small">/ {num(s.onb_booked)}</span></td>
+                    <td>{usd(s.ht_cash)}</td>
+                    <td>{pct(s.ht_pif, s.ht_purchases)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
-      </section>
+        </Section>
 
-      {upcoming.length > 0 && (
-        <p className="small muted" style={{ marginTop: 20 }}>
-          Upcoming: {upcoming.map((s) => `${sessionLabel(s.session_at)} (${num(s.registrants)} registered)`).join(" · ")}
-        </p>
-      )}
+        <Section title="High-ticket buyers" intro="Everyone whose first Ignite or Mastermind payment on Whop falls in these dates. Click a name to open them in GHL.">
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Buyer</th><th>Offer</th><th>First paid</th><th>Cash so far</th><th>How they paid</th><th>Webinar</th><th>Onboarding call</th></tr></thead>
+              <tbody>
+                {buyers.length === 0 && <tr><td colSpan={7} className="muted">No high-ticket buyers in these dates.</td></tr>}
+                {buyers.map((b) => {
+                  const href = contactUrl(b.contact_id);
+                  return (
+                    <tr key={`${b.email}|${b.product_group}`}>
+                      <td>{href ? <a href={href} target="_blank" rel="noopener noreferrer">{b.email}</a> : b.email}</td>
+                      <td>{GROUP_LABEL[b.product_group] ?? b.product_group}</td>
+                      <td>{shortDate(b.first_paid_at)}</td>
+                      <td>{usd(b.cash)}</td>
+                      <td>{TYPE_LABEL[b.payment_type] ?? b.payment_type}</td>
+                      <td>{b.session_at ? sessionLabel(b.session_at) : <span className="muted">none before buying</span>}</td>
+                      <td>{b.onboarding_attended === true ? "Showed" : b.onboarding_attended === false ? "No-show" : <span className="muted">none or unknown</span>}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Section>
 
-      <details className="more">
-        <summary>Session-by-session breakdown</summary>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Session</th><th>Registrants</th><th>Spend</th><th>Cost/reg</th><th>Attended</th><th>Stayed</th>
-                <th>Buyers</th><th>Cash</th><th>$97 sales</th><th>Onboarding attended</th><th>HT cash</th><th>PIF</th>
-              </tr>
-            </thead>
-            <tbody>
-              {held.length === 0 && <tr><td colSpan={12} className="muted">No sessions in this range.</td></tr>}
-              {held.map((s) => (
-                <tr key={s.session_at.toISOString()}>
-                  <td>{sessionLabel(s.session_at)}</td>
-                  <td>{num(s.registrants)}</td>
-                  <td>{adOn && spendComplete(s.reg_rows, s.covered_rows) ? usd(s.ad_spend) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
-                  <td>{adOn && spendComplete(s.reg_rows, s.covered_rows) ? usd(div(s.ad_spend, s.registrants), 2) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
-                  <td>{s.attendees === null ? "—" : `${num(s.attendees)} · ${pct(s.attendees, s.registrants)}`}</td>
-                  <td>{s.stayed_to_pitch === null ? "—" : pct(s.stayed_to_pitch, s.attendees)}</td>
-                  <td>{num(s.buyers)}</td>
-                  <td>{usd(s.cash)}</td>
-                  <td>{s.lm_purchases ? `${num(s.lm_purchases)} · ${usd(s.lm_cash)}` : "—"}</td>
-                  <td>{num(s.onb_attended)} <span className="muted small">/ {num(s.onb_booked)}</span></td>
-                  <td>{usd(s.ht_cash)}</td>
-                  <td>{pct(s.ht_pif, s.ht_purchases)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="small muted">Spend per session is an estimate: each day&apos;s spend is split across sessions by that day&apos;s registrations.</p>
-      </details>
+        <details className="more">
+          <summary>How each number is calculated</summary>
+          <ul className="defs">
+            <li><b>Numbered cards (1–16)</b> follow the KPI list. Webinar numbers cover webinars held in the selected dates; a purchase belongs to the most recent webinar the buyer registered for before paying (matched by email).</li>
+            <li><b>Attendance</b> = people who showed up ÷ people registered. From Zoom (Tiffany&apos;s Personal Meeting Room is the webinar) when it has the webinar; before Nov 12, the show-ups the team types into the tracker. <b>Stayed to pitch</b> = still in the room {PITCH_MINUTE} minutes after it started (Zoom only).</li>
+            <li><b>Onboarding</b> = Leap Welcome Calls, including reschedules. Showed = marked so in GHL, otherwise the call&apos;s Zoom meeting had two or more people.</li>
+            <li><b>High ticket</b> = Ignite and Mastermind on Whop. <b>Cash</b> = Whop payments net of refunds; failed checkouts never count. <b>Paid in full</b> = card/PayPal, all within 7 days of the first payment. <b>Third-party financing</b> = Sezzle, Klarna, Afterpay, ClarityPay or Splitit. <b>Payment plan</b> = Whop splits it.</li>
+            <li><b>Ad spend, clicks, CPC, outbound CTR</b> = the webinar campaigns: from Meta once connected, until then the tracker&apos;s FB Stats (Standout campaigns). <b>Opt-in rate</b> = sign-ups ÷ link clicks (landing page views once Meta is in).</li>
+            <li><b>Targets</b> come from GHL → Settings → Custom Values, named as on PMU&apos;s dashboard: &quot;KPI Show Rate&quot;, &quot;KPI Close Rate&quot;, &quot;KPI Max Cost Per Close&quot;, &quot;KPI Min ROAS&quot;, &quot;KPI Min Sample&quot;, plus TRC&apos;s own: &quot;KPI Max Cost Per Registrant&quot;, &quot;KPI Registration Rate&quot;, &quot;KPI Attendance Rate&quot;, &quot;KPI Stayed To Pitch Rate&quot;, &quot;KPI Webinar Conversion Rate&quot;, &quot;KPI PIF Rate&quot;, &quot;KPI Max Churn Rate&quot;, &quot;KPI Min LTV CAC&quot;. Rates are percents. A group smaller than the minimum sample is marked &quot;Too few to judge&quot;.</li>
+          </ul>
+        </details>
 
-      <details className="more">
-        <summary>How each number is calculated</summary>
-        <ul className="defs">
-          <li><b>Webinar numbers (4–8)</b> cover sessions held in the selected window. A purchase belongs to the most recent session the buyer registered for before paying (matched by email).</li>
-          <li><b>Onboarding (9–12)</b> = Leap Welcome Calls, including reschedules. Attended = marked &quot;showed&quot; in GHL, otherwise taken from the call&apos;s Zoom report once Zoom is connected.</li>
-          <li><b>High ticket</b> = Ignite and Mastermind offers. <b>Cash</b> = Whop payments net of refunds; failed checkouts never count.</li>
-          <li><b>Paid in full</b> = card/PayPal, all within 7 days of the first payment (deposit + balance counts). <b>Financing</b> = any part through Sezzle, Klarna, Afterpay, ClarityPay or Splitit. <b>Plan</b> = Whop splits it in-house.</li>
-          <li><b>Attendance</b> = people who showed up ÷ people registered. From Zoom once connected; until then the show-ups the team enters in its tracker sheet. <b>Stayed to pitch</b> = still in the Zoom webinar {PITCH_MINUTE} minutes after it started (Zoom only).</li>
-          <li><b>Ad spend</b> = Facebook spend on the webinar campaigns: from Meta once connected, until then the tracker sheet's FB Stats (Standout campaigns). <b>$97 lead-magnet sales</b> come from the tracker sheet and are not part of $ from webinar.</li>
-        </ul>
-      </details>
-
-      <details className="more">
-        <summary>Sync status</summary>
-        <div className="small" style={{ padding: "8px 2px" }}>
-          {sync ? <div className="muted">Last run {dateTime(sync.started_at)}</div> : <div className="muted">No sync yet.</div>}
-          {Object.entries(sync?.detail ?? {}).map(([k, v]) => (
-            <div key={k}>
-              <b>{k}</b>: {v.skipped ? `not connected` : v.ok ? "ok" : <span style={{ color: "var(--bad)" }}>{v.error}</span>}
-            </div>
-          ))}
-        </div>
-      </details>
-    </main>
+        <details className="more">
+          <summary>Sync status</summary>
+          <div className="small" style={{ padding: "8px 2px" }}>
+            {sync ? <div className="muted">Last run {dateTime(sync.started_at)}</div> : <div className="muted">No sync yet.</div>}
+            {Object.entries(sync?.detail ?? {}).map(([k, v]) => (
+              <div key={k}><b>{k}</b>: {v.skipped ? "not connected" : v.ok ? "ok" : <span style={{ color: "var(--bad)" }}>{v.error}</span>}</div>
+            ))}
+          </div>
+        </details>
+      </main>
+    </>
   );
 }
