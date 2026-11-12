@@ -21,9 +21,14 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
   if (!evs.length) return "unmatched";
   const through = evs.reduce((m, e) => Math.max(m, e.id), 0);
   const unmatched = async () => {
-    await sql`
-      insert into trc.zoom_unmatched (instance_uuid, rebuilt_through) values (${instanceUuid}, ${through})
-      on conflict (instance_uuid) do update set rebuilt_through = excluded.rebuilt_through, checked_at = now()`;
+    await sql.begin(async (tx) => {
+      // an earlier rebuild (under an older rule) may have matched it: that match no longer stands
+      const [was] = await tx<Array<{ appointment_id: string | null }>>`delete from trc.zoom_instances where uuid = ${instanceUuid} returning appointment_id`;
+      if (was?.appointment_id) await tx`update trc.appointments set zoom_attended = null where id = ${was.appointment_id}`;
+      await tx`
+        insert into trc.zoom_unmatched (instance_uuid, rebuilt_through) values (${instanceUuid}, ${through})
+        on conflict (instance_uuid) do update set rebuilt_through = excluded.rebuilt_through, checked_at = now()`;
+    });
     return "unmatched" as const;
   };
   const first = evs[0]!;
