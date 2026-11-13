@@ -5,6 +5,9 @@
 /** Earliest date the sync backfills. Whop sales start 2026-08-07. */
 export const BACKFILL_START = "2026-08-01";
 
+/** How far back the calendars are read: a partial has never booked a call, ever, so bookings before the webinar funnel count. */
+export const APPOINTMENTS_FROM = "2024-01-01";
+
 /** GHL forms whose submissions are webinar registrations. */
 export const REGISTRATION_FORMS = [
   { id: "tXDzMqHo7Yfrh2fzdMIC", name: "The Standout System Webinar Form - (Offer 2 Dates)" },

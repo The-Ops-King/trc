@@ -1,6 +1,7 @@
 import "server-only";
 import type postgres from "postgres";
 import { PITCH_MINUTE, WEBINAR_ZOOM_IDS } from "./config";
+import { isTestOrTeam } from "./people";
 export { eventRow, urlValidationAnswer, zoomSignatureOk } from "./zoom-webhook-core";
 
 // Turning stored Zoom joined/left events into attendance per instance (the webhook itself is in zoom-webhook-core.ts).
@@ -49,8 +50,11 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
     order by abs(extract(epoch from start_at - ${start}::timestamptz)) limit 1`;
   if (!session && !call) return unmatched();
 
+  // the host and the team are not attendees (and test joins are not either): the same rule as every other number
+  const team = new Set((await sql<{ email: string }[]>`select email from trc.team`).map((r) => r.email));
   const people = new Map<string, { email: string | null; name: string | null; first: number; last: number; ms: number; open: number | null }>();
   for (const e of evs) {
+    if (isTestOrTeam(e.email, e.name, team)) continue;
     const p = people.get(e.participant_key) ?? { email: e.email, name: e.name, first: Infinity, last: -Infinity, ms: 0, open: null };
     const t = e.at.getTime();
     if (e.event.endsWith("joined")) { p.first = Math.min(p.first, t); if (p.open === null) p.open = t; }
@@ -79,7 +83,8 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
     await tx`delete from trc.zoom_unmatched where instance_uuid = ${instanceUuid}`;
     await tx`delete from trc.zoom_attendees where instance_uuid = ${instanceUuid}`;
     if (rows.length) await tx`insert into trc.zoom_attendees ${tx(rows)}`;
-    if (call) await tx`update trc.appointments set zoom_attended = ${people.size >= 2} where id = ${call.id}`;
+    // someone other than the team joined: the prospect showed
+    if (call) await tx`update trc.appointments set zoom_attended = ${people.size >= 1} where id = ${call.id}`;
   });
   return session ? "webinar" : "onboarding";
 }

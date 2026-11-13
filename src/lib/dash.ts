@@ -3,6 +3,7 @@ import { db } from "./db";
 import { laDay } from "./metrics";
 import { DEFAULT_TARGETS, TARGET_NAMES, type Targets } from "./targets";
 import { PITCH_MINUTE } from "./config";
+import { buildPeople, type ApptRecord, type FunnelPerson, type RegRecord } from "./partials.ts";
 
 // The sections added with the PMU-style layout (2026-11-12): targets, results by ad, the daily chart, the high-ticket buyers
 // list, and LTV : CAC. Every query reads the tables the sync fills; nothing here calls an outside service.
@@ -173,4 +174,26 @@ export async function ltvCac(from: Date, to: Date, adSpend: number): Promise<Ltv
     from b`;
   const cac = r!.new_buyers > 0 && adSpend > 0 ? adSpend / r!.new_buyers : null;
   return { ...r!, ad_spend: adSpend, cac, ratio: r!.ltv !== null && cac ? r!.ltv / cac : null };
+}
+
+/**
+ * The partials dataset (partials.ts): every registration and every appointment, grouped into people. The dashboard and the
+ * partial-tag sync both read this, so a partial means the same thing in both. `adDays`: the Pacific days that have ad data.
+ */
+export async function loadFunnelPeople(): Promise<{ people: FunnelPerson[]; adDays: Set<string>; registrations: number; appointments: number; bookingsIncomplete: string | null }> {
+  const sql = db();
+  // until every calendar has been read back to APPOINTMENTS_FROM and every booking's contact is known, some bookers look like partials
+  const [state] = await sql<{ appts_done: boolean | null; contacts_left: number }[]>`
+    select (select (cursor->>'backfilled')::boolean from trc.sync_state where source = 'ghl_appointments') as appts_done,
+           (select count(distinct a.contact_id)::int from trc.appointments a
+             where a.contact_id is not null and not exists (select 1 from trc.ghl_contacts g where g.contact_id = a.contact_id)) as contacts_left`;
+  const bookingsIncomplete = !state?.appts_done ? "the calendars are still being read back to 2024"
+    : state.contacts_left > 0 ? `${state.contacts_left} booking contacts are still being read` : null;
+  const regs = await sql<RegRecord[]>`
+    select submission_id, contact_id, email, full_name, phone, created_at, session_at, utm_campaign, utm_content, utm_term from trc.registrations`;
+  const appts = await sql<ApptRecord[]>`
+    select a.id, a.contact_id, coalesce(a.email, g.email) as email, g.full_name, g.phone, a.start_at
+    from trc.appointments a left join trc.ghl_contacts g on g.contact_id = a.contact_id`;
+  const days = await sql<{ d: string }[]>`select to_char(date, 'YYYY-MM-DD') as d from trc.ad_daily where spend_usd > 0`;
+  return { people: buildPeople(regs, appts), adDays: new Set(days.map((x) => x.d)), registrations: regs.length, appointments: appts.length, bookingsIncomplete };
 }

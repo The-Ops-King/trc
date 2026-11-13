@@ -1,7 +1,7 @@
 import "server-only";
 import { db, serial } from "./db";
 import { rebuildDirty } from "./zoom-webhook";
-import { daily, highTicketBuyers, loadTargets, ltvCac, resultsByAd } from "./dash";
+import { daily, highTicketBuyers, loadFunnelPeople, loadTargets, ltvCac, resultsByAd } from "./dash";
 
 import { PITCH_MINUTE } from "./config";
 export { PITCH_MINUTE };
@@ -358,5 +358,6 @@ async function loadDashboardNow(from: Date, to: Date, prevFrom: Date, sessionsTo
   const buyers = await step("highTicketBuyers", () => highTicketBuyers(from, to));
   const ltv = await step("ltvCac", () => ltvCac(from, to, totals.ad_spend));
   const pLtv = await step("prev.ltvCac", () => ltvCac(prevFrom, from, pTotals.ad_spend));
-  return { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf, targets, ads, days, buyers, ltv, pLtv };
+  const funnelPeople = await step("partials", () => loadFunnelPeople());
+  return { totals, funnel, sessions, sync, lastOk, pTotals, pFunnel, pSessions, weekSessions, thisWeekPeople, lastWeekPeople, lastWeekAsOf, targets, ads, days, buyers, ltv, pLtv, funnelPeople };
 }

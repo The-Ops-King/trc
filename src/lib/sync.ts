@@ -2,7 +2,7 @@ import "server-only";
 import type postgres from "postgres";
 import { db } from "./db";
 import { env } from "./env";
-import { BACKFILL_START, CALENDARS, EXCLUDED_WHOP_PAYMENT_IDS, REGISTRATION_FORMS, SESSION_FIELD_IDS, TRACKER_SHEET_ID } from "./config";
+import { APPOINTMENTS_FROM, BACKFILL_START, CALENDARS, EXCLUDED_WHOP_PAYMENT_IDS, REGISTRATION_FORMS, SESSION_FIELD_IDS, TRACKER_SHEET_ID } from "./config";
 import * as sheet from "./sheet";
 import { parseSessionLabel } from "./session";
 import * as ghl from "./ghl";
@@ -10,6 +10,8 @@ import * as whop from "./whop";
 import * as meta from "./meta";
 import * as zoom from "./zoom";
 import { parseTarget } from "./targets";
+import { isTestOrTeam } from "./people";
+import { reconcilePartialTags, summarize } from "./partial-tags";
 import { rebuildDirty } from "./zoom-webhook";
 
 const DAY = 86_400_000;
@@ -35,10 +37,29 @@ async function setCursor(sql: postgres.Sql, source: string, cursor: unknown) {
     on conflict (source) do update set cursor = excluded.cursor, updated_at = now()`;
 }
 
+/** The team's emails (GHL users), lower case: never prospects. */
+async function teamEmails(sql: postgres.Sql): Promise<Set<string>> {
+  return new Set((await sql<{ email: string }[]>`select email from trc.team`).map((r) => r.email));
+}
+
+// ---------------------------------------------------------------------------
+// GHL: the team (the location's users), kept out of every number
+// ---------------------------------------------------------------------------
+async function syncTeam(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
+  const users = await ghl.listUsers(creds);
+  if (!users.length) throw new Error("GHL returned no users; the team list was left as it was");
+  await c.sql.begin(async (tx) => {
+    await tx`delete from trc.team`;
+    await tx`insert into trc.team ${tx(users.map((u) => ({ email: u.email, name: u.name })))} on conflict (email) do nothing`;
+  });
+  return { ok: true, detail: { users: users.length } };
+}
+
 // ---------------------------------------------------------------------------
 // GHL: webinar registrations (form submissions)
 // ---------------------------------------------------------------------------
 async function syncRegistrations(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
+  const team = await teamEmails(c.sql);
   const cursor = (await getCursor<Record<string, string>>(c.sql, "ghl_registrations")) ?? {};
   const endAt = ymd(new Date(Date.now() + DAY));
   const counts: Record<string, number> = {};
@@ -51,7 +72,7 @@ async function syncRegistrations(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
     while (true) {
       if (outOfTime(c)) { complete = false; break; }
       const r = await ghl.listFormSubmissions(creds, form.id, startAt, endAt, page);
-      const rows = r.submissions.map((s) => {
+      const rows = r.submissions.filter((s) => !isTestOrTeam(s.email, s.name ?? (s.others?.full_name as string | undefined), team)).map((s) => {
         const createdAt = new Date(s.createdAt);
         const label = SESSION_FIELD_IDS.map((id) => s.others?.[id]).find((v): v is string => typeof v === "string" && !!v) ?? null;
         const utm = s.others?.eventData?.url_params ?? {};
@@ -60,6 +81,8 @@ async function syncRegistrations(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
           form_id: s.formId,
           contact_id: s.contactId ?? null,
           email: s.email?.trim() || null,
+          full_name: (s.name ?? (typeof s.others?.full_name === "string" ? s.others.full_name : "")).trim() || null,
+          phone: (typeof s.others?.phone === "string" ? s.others.phone : "").trim() || null,
           created_at: createdAt,
           session_label: label,
           session_at: parseSessionLabel(label, createdAt),
@@ -74,7 +97,8 @@ async function syncRegistrations(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
         await c.sql`
           insert into trc.registrations ${c.sql(rows)}
           on conflict (submission_id) do update set
-            contact_id = excluded.contact_id, email = excluded.email, session_label = excluded.session_label,
+            contact_id = excluded.contact_id, email = excluded.email, full_name = excluded.full_name, phone = excluded.phone,
+            session_label = excluded.session_label,
             session_at = excluded.session_at, synced_at = now()`;
       }
       n += rows.length;
@@ -99,15 +123,27 @@ async function syncRegistrations(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
 // GHL: calendar appointments
 // ---------------------------------------------------------------------------
 async function syncAppointments(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
-  const cursor = await getCursor<{ backfilled?: boolean }>(c.sql, "ghl_appointments");
-  const from = cursor?.backfilled ? Date.now() - 45 * DAY : new Date(`${BACKFILL_START}T00:00:00Z`).getTime();
+  // The first pass reads every calendar back to APPOINTMENTS_FROM ("never booked a call" means ever), one calendar at a time,
+  // remembering each finished one, so a pass longer than one run carries on where it stopped. After that, 45 days back.
+  const cursor = await getCursor<{ backfilled?: boolean; done?: string[] }>(c.sql, "ghl_appointments");
+  const done = new Set(cursor?.done ?? []);
   const to = Date.now() + 60 * DAY;
   let upserted = 0;
   let removed = 0;
+  // Every calendar in the location: a partial is someone who never booked a call on any of them (Tyler, 2026-11-13). The ones
+  // the dashboard reports on keep their kind (onboarding, sales); the rest are 'other'.
+  const known = new Map(CALENDARS.map((k) => [k.id, k.kind]));
+  const calendars = await ghl.listCalendars(creds);
+  if (!calendars.length) throw new Error("GHL returned no calendars");
 
-  for (const cal of CALENDARS) {
+  for (const cal of calendars) {
+    const from = cursor?.backfilled ? Date.now() - 45 * DAY : done.has(cal.id) ? null : new Date(`${APPOINTMENTS_FROM}T00:00:00Z`).getTime();
+    if (from === null) continue;
     for (let start = from; start < to; start += 30 * DAY) {
-      if (outOfTime(c)) return { ok: true, detail: { upserted, removed, complete: false } };
+      if (outOfTime(c)) {
+        if (!cursor?.backfilled) await setCursor(c.sql, "ghl_appointments", { backfilled: false, done: [...done] });
+        return { ok: true, detail: { upserted, removed, complete: false, calendarsDone: done.size } };
+      }
       const events = await ghl.listCalendarEvents(creds, cal.id, start, Math.min(start + 30 * DAY, to));
       const live = events.filter((e) => !e.deleted);
       const gone = events.filter((e) => e.deleted).map((e) => e.id);
@@ -115,7 +151,7 @@ async function syncAppointments(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
       const rows = live.map((e) => ({
         id: e.id,
         calendar_id: cal.id,
-        kind: cal.kind,
+        kind: known.get(cal.id) ?? "other",
         contact_id: e.contactId ?? null,
         email: e.appointmentMeta?.defaultFormDetails?.email?.trim() || null,
         start_at: new Date(e.startTime),
@@ -132,22 +168,48 @@ async function syncAppointments(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
         upserted += rows.length;
       }
     }
+    done.add(cal.id);
   }
 
-  // Fill missing emails from the contact record (capped per run).
+  // The contact behind each appointment (name, email, phone), read once, for matching bookers to registrants. Capped per run;
+  // the rest are read by the next run.
   const missing = await c.sql<{ contact_id: string }[]>`
-    select distinct contact_id from trc.appointments where email is null and contact_id is not null limit 150`;
-  let filled = 0;
+    select distinct a.contact_id from trc.appointments a
+    where a.contact_id is not null and not exists (select 1 from trc.ghl_contacts g where g.contact_id = a.contact_id) limit 600`;
+  let read = 0, gone = 0;
   for (const { contact_id } of missing) {
     if (outOfTime(c)) break;
-    const email = await ghl.getContactEmail(creds, contact_id);
-    if (email) {
-      await c.sql`update trc.appointments set email = ${email.trim()} where contact_id = ${contact_id} and email is null`;
-      filled++;
-    }
+    const k = await ghl.getContact(creds, contact_id);
+    await c.sql`
+      insert into trc.ghl_contacts (contact_id, full_name, email, phone) values (${contact_id}, ${k?.name ?? null}, ${k?.email ?? null}, ${k?.phone ?? null})
+      on conflict (contact_id) do update set full_name = excluded.full_name, email = excluded.email, phone = excluded.phone, fetched_at = now()`;
+    if (k?.email) await c.sql`update trc.appointments set email = ${k.email} where contact_id = ${contact_id} and email is null`;
+    if (k) read++; else gone++;
   }
+  const [left] = await c.sql<{ n: number }[]>`
+    select count(distinct a.contact_id)::int as n from trc.appointments a
+    where a.contact_id is not null and not exists (select 1 from trc.ghl_contacts g where g.contact_id = a.contact_id)`;
   await setCursor(c.sql, "ghl_appointments", { backfilled: true });
-  return { ok: true, detail: { upserted, removed, emailsFilled: filled } };
+  return { ok: true, detail: { calendars: calendars.length, upserted, removed, contactsRead: read, contactsGone: gone, contactsLeft: left?.n ?? 0 } };
+}
+
+// ---------------------------------------------------------------------------
+// Test and team entries: kept out of every table (the rule is isTestOrTeam in people.ts)
+// ---------------------------------------------------------------------------
+async function purgeTestAndTeam(c: Ctx): Promise<Result> {
+  const team = await teamEmails(c.sql);
+  if (!team.size) throw new Error("no team list yet; nothing purged");
+  const regs = await c.sql<{ submission_id: string; email: string | null; full_name: string | null }[]>`select submission_id, email, full_name from trc.registrations`;
+  const regGone = regs.filter((r) => isTestOrTeam(r.email, r.full_name, team)).map((r) => r.submission_id);
+  const appts = await c.sql<{ id: string; email: string | null; full_name: string | null }[]>`
+    select a.id, coalesce(a.email, g.email) as email, g.full_name from trc.appointments a left join trc.ghl_contacts g on g.contact_id = a.contact_id`;
+  const apptGone = appts.filter((a) => isTestOrTeam(a.email, a.full_name, team)).map((a) => a.id);
+  const pays = await c.sql<{ id: string; email: string | null }[]>`select id, email from trc.whop_payments where not excluded`;
+  const payOut = pays.filter((p) => isTestOrTeam(p.email, null, team)).map((p) => p.id);
+  if (regGone.length) await c.sql`delete from trc.registrations where submission_id in ${c.sql(regGone)}`;
+  if (apptGone.length) await c.sql`delete from trc.appointments where id in ${c.sql(apptGone)}`;
+  if (payOut.length) await c.sql`update trc.whop_payments set excluded = true where id in ${c.sql(payOut)}`;
+  return { ok: true, detail: { registrations: regGone.length, appointments: apptGone.length, whopPayments: payOut.length } };
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +220,7 @@ async function syncWhop(c: Ctx, key: string): Promise<Result> {
   // After the first full pull, re-read 60 days each run so status changes and refunds land.
   const stopBefore = cursor?.backfilled ? Date.now() - 60 * DAY : 0;
   const excluded = new Set(EXCLUDED_WHOP_PAYMENT_IDS.map((e) => e.id));
+  const team = await teamEmails(c.sql);
   let after: string | null = null;
   let upserted = 0;
 
@@ -180,7 +243,7 @@ async function syncWhop(c: Ctx, key: string): Promise<Result> {
       total_usd: whop.money(p.usd_total ?? p.total),
       refunded_usd: whop.money(p.refunded_amount),
       financing_installments: p.financing_installments_count,
-      excluded: excluded.has(p.id),
+      excluded: excluded.has(p.id) || isTestOrTeam(p.customer_email, null, team),
     }));
     if (rows.length) {
       await c.sql`
@@ -437,17 +500,26 @@ export async function runSync(trigger: "cron" | "hourly" | "manual", budgetMs = 
   const w = env.whop();
   const m = env.meta();
   const z = env.zoom();
+  await step("ghl_team", g, () => syncTeam(c, g!));
   await step("ghl_registrations", g, () => syncRegistrations(c, g!));
   await step("ghl_appointments", g, () => syncAppointments(c, g!));
   await step("kpi_targets", g, () => syncTargets(c, g!));
   await step("whop_payments", w, () => syncWhop(c, w!.key));
   await step("meta_ads", m, () => syncMeta(c, m!));
+  await step("purge_test_and_team", g, () => purgeTestAndTeam(c));
   await step("tracker_sheet", TRACKER_SHEET_ID, () => syncTrackerSheet(c, TRACKER_SHEET_ID));
   // Zoom runs last: it matches against registrations and appointments synced above.
   await step("zoom", z, () => syncZoom(c, z!));
   // Attendance from the Zoom webhook's events: any meeting with events no rebuild has read yet (matches need the registrations and
   // appointments synced above).
   await step("zoom_webhook_rebuild", true, async () => ({ ok: true, detail: await rebuildDirty(sql, 200) }));
+  // The partial tag in GHL, from the same dataset the page reads (partial-tags.ts). Writes only with PARTIAL_TAGS=live; otherwise
+  // a dry run that logs what it would change. Last, so it reads everything synced above; it stops at the run's time limit and
+  // the next run carries on.
+  await step("partial_tags", g, async () => {
+    const plan = await reconcilePartialTags(sql, g!, { live: process.env.PARTIAL_TAGS?.trim() === "live", deadline: c.deadline });
+    return { ok: !plan.aborted && !plan.failed?.length, ...(plan.aborted ? { error: `not run: ${plan.aborted}` } : {}), detail: summarize(plan) };
+  });
 
   const ok = Object.values(results).every((r) => r.ok);
   await sql`update trc.sync_runs set finished_at = now(), ok = ${ok}, detail = ${sql.json(results as postgres.JSONValue)} where id = ${run!.id}`;
