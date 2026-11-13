@@ -17,6 +17,7 @@ export type FunnelPerson = {
   booked: boolean;               // any appointment on any of their contacts, any status, any time
   campaign: string | null; adset: string | null; ad: string | null;   // the ad of that first registration
   sessionAt: Date | null;        // the webinar that first registration picked
+  regs: Array<{ at: Date; sessionAt: Date | null; campaign: string | null; adset: string | null; ad: string | null }>;   // every registration, oldest first
 };
 
 /** A UTM value still holding Meta's macro ("{{ad.name}}", a preview click) names no ad. */
@@ -51,30 +52,52 @@ export function buildPeople(regs: RegRecord[], appts: ApptRecord[]): FunnelPerso
       booked: booked.has(id),
       campaign: utm(first.utm_campaign), adset: utm(first.utm_content), ad: utm(first.utm_term),
       sessionAt: first.session_at,
+      regs: rs.map((r) => ({ at: r.created_at, sessionAt: r.session_at, campaign: utm(r.utm_campaign), adset: utm(r.utm_content), ad: utm(r.utm_term) })),
     };
   });
 }
 
-export type PartialCounts = { gave: number; booked: number; partials: number; gaveOnAdDays: number };
+export type PartialCounts = { registrants: number; booked: number; partials: number; registrantsOnAdDays: number };
+type Row = { registrants: number; booked: number; partials: number };
 
-/** People who gave their contact in [from, to), how many booked, how many are partials, and how many on days that have ad data. */
+/** A person's first registration in [from, to), or null when they didn't register then. */
+const firstIn = (p: FunnelPerson, from: Date, to: Date) => p.regs.find((r) => r.at >= from && r.at < to) ?? null;
+
+/**
+ * Webinar registrants in [from, to): people who registered in those dates, each counted once however many contacts or
+ * registrations they have. Each is booked or a partial, so registrants = booked + partials. `registrantsOnAdDays`: those whose
+ * first registration in the dates fell on a day with ad data (cost per contact captured divides by it).
+ */
 export function countPartials(people: FunnelPerson[], from: Date, to: Date, adDays: ReadonlySet<string>, laDay: (d: Date) => string): PartialCounts {
-  const inR = people.filter((p) => p.addedAt >= from && p.addedAt < to);
-  const booked = inR.filter((p) => p.booked).length;
-  return { gave: inR.length, booked, partials: inR.length - booked, gaveOnAdDays: inR.filter((p) => adDays.has(laDay(p.addedAt))).length };
+  let registrants = 0, booked = 0, onAdDays = 0;
+  for (const p of people) {
+    const r = firstIn(p, from, to);
+    if (!r) continue;
+    registrants++;
+    if (p.booked) booked++;
+    if (adDays.has(laDay(r.at))) onAdDays++;
+  }
+  return { registrants, booked, partials: registrants - booked, registrantsOnAdDays: onAdDays };
 }
 
-/** The same counts split by a key (the ad, the webinar). Every row: gave = booked + partials. */
-export function partialsBy<K>(people: FunnelPerson[], from: Date, to: Date, key: (p: FunnelPerson) => K): Map<K, { gave: number; booked: number; partials: number }> {
-  const out = new Map<K, { gave: number; booked: number; partials: number }>();
-  for (const p of people) {
-    if (p.addedAt < from || p.addedAt >= to) continue;
-    const k = key(p);
-    const row = out.get(k) ?? { gave: 0, booked: 0, partials: 0 };
-    row.gave++;
-    if (p.booked) row.booked++; else row.partials++;
-    out.set(k, row);
-  }
+const add = (out: Map<string, Row>, k: string, booked: boolean) => {
+  const row = out.get(k) ?? { registrants: 0, booked: 0, partials: 0 };
+  row.registrants++;
+  if (booked) row.booked++; else row.partials++;
+  out.set(k, row);
+};
+
+/** The same split by the ad of each person's first registration in [from, to). Every row: registrants = booked + partials. */
+export function partialsByAd(people: FunnelPerson[], from: Date, to: Date): Map<string, Row> {
+  const out = new Map<string, Row>();
+  for (const p of people) { const r = firstIn(p, from, to); if (r) add(out, adKey(r.campaign, r.adset, r.ad), p.booked); }
+  return out;
+}
+
+/** Per webinar (by its start, ISO): the people registered for it, booked or partial. Someone registered for two webinars is in both rows. */
+export function partialsBySession(people: FunnelPerson[]): Map<string, Row> {
+  const out = new Map<string, Row>();
+  for (const p of people) for (const s of new Set(p.regs.map((r) => r.sessionAt?.toISOString()).filter((x): x is string => !!x))) add(out, s, p.booked);
   return out;
 }
 

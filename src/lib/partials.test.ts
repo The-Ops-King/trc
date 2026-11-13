@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildPeople, countPartials, partialsBy, type ApptRecord, type RegRecord } from "./partials.ts";
+import { adKey, buildPeople, countPartials, partialsByAd, partialsBySession, type ApptRecord, type RegRecord } from "./partials.ts";
 import { isTestOrTeam } from "./people.ts";
 
 const reg = (id: string, o: Partial<RegRecord>): RegRecord => ({
@@ -38,20 +38,35 @@ test("partials: name plus email or phone is required; a registration with neithe
   assert.deepEqual(people.map((p) => p.booked), [false]);
 });
 
-test("partials: a cancelled booking still counts as booked; gave = booked + partials overall and per row", () => {
+test("partials: a cancelled booking still counts as booked; registrants = booked + partials overall, per ad and per webinar", () => {
+  const w1 = new Date("2026-11-10T17:00:00Z"), w2 = new Date("2026-11-12T19:00:00Z");
   const people = buildPeople(
-    [reg("1", { contact_id: "c1", full_name: "A A", email: "a@x.com", utm_term: "Ad 1" }),
-     reg("2", { contact_id: "c2", full_name: "B B", email: "b@x.com", utm_term: "Ad 1" }),
-     reg("3", { contact_id: "c3", full_name: "C C", email: "c@x.com", utm_term: "{{ad.name}}" })],
+    [reg("1", { contact_id: "c1", full_name: "A A", email: "a@x.com", utm_term: "Ad 1", session_at: w1 }),
+     reg("2", { contact_id: "c2", full_name: "B B", email: "b@x.com", utm_term: "Ad 1", session_at: w1 }),
+     reg("2b", { contact_id: "c2", full_name: "B B", email: "b@x.com", utm_term: "Ad 1", session_at: w2 }),
+     reg("3", { contact_id: "c3", full_name: "C C", email: "c@x.com", utm_term: "{{ad.name}}", session_at: w2 })],
     [appt("a", { contact_id: "c2" })],   // status is not read: any appointment is a booking
   );
   const from = new Date("2026-11-01"), to = new Date("2026-12-01");
   const all = countPartials(people, from, to, new Set(["2026-11-10"]), (d) => d.toISOString().slice(0, 10));
-  assert.deepEqual(all, { gave: 3, booked: 1, partials: 2, gaveOnAdDays: 3 });
-  const rows = partialsBy(people, from, to, (p) => p.ad);
-  assert.deepEqual(rows.get("Ad 1"), { gave: 2, booked: 1, partials: 1 });
-  assert.deepEqual(rows.get(null), { gave: 1, booked: 0, partials: 1 });
-  for (const r of rows.values()) assert.equal(r.gave, r.booked + r.partials);
+  assert.deepEqual(all, { registrants: 3, booked: 1, partials: 2, registrantsOnAdDays: 3 });
+  const ads = partialsByAd(people, from, to);
+  assert.deepEqual(ads.get(adKey(null, null, "Ad 1")), { registrants: 2, booked: 1, partials: 1 });
+  assert.deepEqual(ads.get(adKey(null, null, null)), { registrants: 1, booked: 0, partials: 1 });
+  const sessions = partialsBySession(people);
+  assert.deepEqual(sessions.get(w1.toISOString()), { registrants: 2, booked: 1, partials: 1 });
+  assert.deepEqual(sessions.get(w2.toISOString()), { registrants: 2, booked: 1, partials: 1 });
+  for (const r of [...ads.values(), ...sessions.values()]) assert.equal(r.registrants, r.booked + r.partials);
+});
+
+test("partials: someone who first registered before the dates counts when they register again in them", () => {
+  const people = buildPeople(
+    [reg("1", { contact_id: "c1", full_name: "A A", email: "a@x.com", created_at: new Date("2026-10-01T18:00:00Z") }),
+     reg("2", { contact_id: "c1", full_name: "A A", email: "a@x.com", created_at: new Date("2026-11-05T18:00:00Z") })],
+    [],
+  );
+  const n = countPartials(people, new Date("2026-11-01"), new Date("2026-12-01"), new Set(), (d) => d.toISOString().slice(0, 10));
+  assert.deepEqual(n, { registrants: 1, booked: 0, partials: 1, registrantsOnAdDays: 0 });
 });
 
 test("partials: dated by the first time they gave their contact", () => {

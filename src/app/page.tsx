@@ -3,7 +3,7 @@ import { hasSession } from "@/lib/guard";
 import { env } from "@/lib/env";
 import { loadDashboard, laDay, PITCH_MINUTE, type PeriodFunnel, type PeriodTotals, type SessionRow } from "@/lib/metrics";
 import type { AdRow, LtvCac } from "@/lib/dash";
-import { adKey, countPartials, partialsBy, type PartialCounts } from "@/lib/partials.ts";
+import { adKey, countPartials, partialsByAd, partialsBySession, type PartialCounts } from "@/lib/partials.ts";
 import { judge, type Targets } from "@/lib/targets";
 import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } from "@/lib/format";
 import { laWallTimeToUtc } from "@/lib/session";
@@ -51,14 +51,16 @@ function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[], ltv: LtvC
     cpc: rate(t.ad_spend, t.link_clicks),
     outCtr: rate(t.outbound_clicks, t.impressions),
     signups: t.registrants,
-    optIn: rate(t.registrants_on_ad_days, clicks),
+    optIn: rate(pc.registrantsOnAdDays, clicks),
     costPerReg: rate(t.ad_spend, t.registrants_on_ad_days),
-    // partials (partials.ts): people who gave a name plus email or phone, and how many never booked a call
-    gave: pc.gave,
+    // webinar registrants (people, partials.ts) = partials (never booked a call) + booked a call
+    registrants: pc.registrants,
     partials: pc.partials,
-    partialRate: rate(pc.partials, pc.gave),
-    // the cost metric: ad spend ÷ everyone who gave their contact on days with ad data (not ÷ partials, which rises as booking improves)
-    costPerContact: rate(t.ad_spend, pc.gaveOnAdDays),
+    booked: pc.booked,
+    partialRate: rate(pc.partials, pc.registrants),
+    bookedRate: rate(pc.booked, pc.registrants),
+    // the cost metric: ad spend ÷ registrants on days with ad data (not ÷ partials, which rises as booking improves)
+    costPerContact: rate(t.ad_spend, pc.registrantsOnAdDays),
     registered: sum(held, "registrants"),
     attendees: sum(a, "attendees"),
     attRegs: sum(a, "registrants"),
@@ -191,8 +193,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
   // targets → ok / miss / thin
   const f = {
-    costPerContact: judge(cur.costPerContact, t.costPerRegistrantMax, pc.gaveOnAdDays, minN, true),
-    optIn: judge(cur.optIn === null ? null : cur.optIn * 100, t.registrationRate, totals.registrants_on_ad_days, minN),
+    costPerContact: judge(cur.costPerContact, t.costPerRegistrantMax, pc.registrantsOnAdDays, minN, true),
+    optIn: judge(cur.optIn === null ? null : cur.optIn * 100, t.registrationRate, pc.registrantsOnAdDays, minN),
     attendance: judge(cur.attendance === null ? null : cur.attendance * 100, t.attendanceRate, cur.attRegs, minN),
     stayed: judge(cur.stayed === null ? null : cur.stayed * 100, t.stayedRate, cur.zoomAttendees, minN),
     attBuyer: judge(cur.attBuyer === null ? null : cur.attBuyer * 100, t.webinarConversion, cur.zoomAttendees, minN),
@@ -222,13 +224,13 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     warnings.push("No webinar targets are set yet. Add them in GHL → Settings → Custom Values (\"KPI Max Cost Per Registrant\", \"KPI Attendance Rate\", …, listed under How each number is calculated); show rate, close rate, cost per high-ticket buyer and ROAS use PMU's defaults until then.");
 
   // Partials per ad (by the ad of the person's first registration) and per webinar (the one their first registration picked)
-  const adPartials = partialsBy(funnelPeople.people, from, to, (p) => adKey(p.campaign, p.adset, p.ad));
+  const adPartials = partialsByAd(funnelPeople.people, from, to);
   const known = new Set(ads.map((r) => adKey(r.campaign, r.adset, r.ad)));
   const blankAd = (k: string): AdRow => { const [campaign, adset, ad] = k.split("|").map((x) => x || null) as [string | null, string | null, string | null];
     return { campaign, adset, ad, registrants: 0, attended: 0, stayed: 0, buyers: 0, ht_buyers: 0, ht_cash: 0, spend: null, impressions: null, link_clicks: null, status: null, thumbnail: null, frequency_7d: null }; };
   const adRows = [...ads, ...[...adPartials.keys()].filter((k) => !known.has(k)).map(blankAd)]
     .filter((r) => r.registrants > 0 || (r.spend ?? 0) > 0 || adPartials.has(adKey(r.campaign, r.adset, r.ad)));
-  const sessionPartials = partialsBy(funnelPeople.people, new Date(0), new Date(8.64e15), (p) => p.sessionAt?.toISOString() ?? "");
+  const sessionPartials = partialsBySession(funnelPeople.people);
   const contactUrl = (id: string | null) => (id && location ? `https://app.tiffanyrosecoaching.com/v2/location/${location}/contacts/detail/${id}` : null);
 
   return (
@@ -270,8 +272,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         <div className="glance">
           <Card big title="Cost per contact captured" value={adNone || cur.costPerContact === null ? "—" : usd(cur.costPerContact, 2)}
             target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerContact} warn={adWarn}
-            sub={`${usd(totals.ad_spend)} ad spend ÷ ${num(pc.gaveOnAdDays)} people who gave name and contact`}
-            info={<><p>Ad spend ÷ everyone who gave their name plus an email or phone (a webinar registration), on days that have ad data.</p><p>People, not contacts: two contacts with the same name and email, or name and phone, are one person, dated by the first time they gave their contact.</p></>}
+            sub={`${usd(totals.ad_spend)} ad spend ÷ ${num(pc.registrantsOnAdDays)} webinar registrants`}
+            info={<><p>Ad spend ÷ webinar registrants (people who gave their name plus an email or phone), on days that have ad data.</p><p>Not ÷ partials: that would go up exactly when more people book.</p></>}
             delta={<Delta cur={cur.costPerContact} prev={prev.costPerContact} kind="count" better="down" label={vsLabel} money />} />
           <Card big title="Webinar attendance" value={pctOf(cur.attendance)} target={tgt(t.attendanceRate, "%")} flag={f.attendance}
             sub={`${num(cur.attendees)} of ${num(cur.attRegs)} registered`}
@@ -310,25 +312,22 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             <Card title="Outbound CTR" value={pctOf(cur.outCtr, 2)} sub={`${num(totals.outbound_clicks)} outbound clicks · ${num(totals.impressions)} views`}
               info={<p>Clicks that left Facebook for the landing page ÷ times the ads were shown.</p>}
               delta={<Delta cur={cur.outCtr} prev={prev.outCtr} kind="rate" label={vsLabel} />} />
-            <Card title="Registrations" value={num(cur.signups)} sub="people who signed up in these dates"
-              info={<p>Unique people who filled out the webinar form in this period (GHL), whichever session they picked.</p>}
-              delta={<Delta cur={cur.signups} prev={prev.signups} kind="count" label={vsLabel} />} />
-            <Card n={2} title="Opt-in rate" value={pctOf(cur.optIn)} target={tgt(t.registrationRate, "%")} flag={f.optIn}
-              sub={`${num(totals.registrants_on_ad_days)} sign-ups ÷ ${num(totals.landing_page_views || totals.link_clicks)} ${clicksLabel}`}
-              info={<p>Sign-ups ÷ {clicksLabel}, counting only days that have ad data. Landing page views come with Meta; until then link clicks are used, as the tracker does.</p>}
-              delta={<Delta cur={cur.optIn} prev={prev.optIn} kind="rate" label={vsLabel} />} />
-            <Card title="Gave name and contact" value={num(pc.gave)} sub={`${num(pc.booked)} booked a call · ${num(pc.partials)} partials`}
-              info={<p>People who gave their name plus an email or phone in these dates (the webinar form), counted once however many GHL contacts they have, dated by the first time they gave it.</p>}
-              delta={<Delta cur={cur.gave} prev={prev.gave} kind="count" label={vsLabel} />} />
-            <Card title="Partials" value={num(pc.partials)} sub={`${pctOf(cur.partialRate)} of ${num(pc.gave)} who gave name and contact`}
-              info={<><p>People who gave their name and contact and have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick. A booking that was later cancelled or missed still counts as booked.</p><p>Test entries and the team are never partials.</p></>}
+            <Card title="Webinar registrants" value={num(pc.registrants)} sub={`${num(pc.partials)} partials · ${num(pc.booked)} booked a call`}
+              info={<><p>People who registered for a webinar in these dates (name plus email or phone), each counted once however many registrations or GHL contacts they have (same name and email, or same name and phone, is one person).</p><p>Webinar registrants = partials + booked a call.</p></>}
+              delta={<Delta cur={cur.registrants} prev={prev.registrants} kind="count" label={vsLabel} />} />
+            <Card title="Partials" value={num(pc.partials)} sub={`${pctOf(cur.partialRate)} of ${num(pc.registrants)} webinar registrants did not book a call`}
+              info={<><p>Webinar registrants who have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick. A booking that was later cancelled or missed still counts as booked.</p><p>Test entries and the team are never partials.</p></>}
               delta={<Delta cur={cur.partials} prev={prev.partials} kind="count" better="down" label={vsLabel} />} />
+            <Card title="Booked a call" value={num(pc.booked)} sub={`${pctOf(cur.bookedRate)} of ${num(pc.registrants)} webinar registrants`}
+              info={<p>Webinar registrants who have booked a call on any of TRC&apos;s calendars, with Tiffany or Nick, whenever they booked it. Cancelled or missed bookings count.</p>}
+              delta={<Delta cur={cur.booked} prev={prev.booked} kind="count" label={vsLabel} />} />
+            <Card n={2} title="Opt-in rate" value={pctOf(cur.optIn)} target={tgt(t.registrationRate, "%")} flag={f.optIn}
+              sub={`${num(pc.registrantsOnAdDays)} registrants ÷ ${num(totals.landing_page_views || totals.link_clicks)} ${clicksLabel}`}
+              info={<p>Webinar registrants ÷ {clicksLabel}, counting only days that have ad data. Landing page views come with Meta; until then link clicks are used, as the tracker does.</p>}
+              delta={<Delta cur={cur.optIn} prev={prev.optIn} kind="rate" label={vsLabel} />} />
             <Card n={1} title="Cost per contact captured" value={adNone || cur.costPerContact === null ? "—" : usd(cur.costPerContact, 2)} target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerContact}
-              sub={`ad spend ÷ ${num(pc.gaveOnAdDays)} who gave name and contact on days with ad data`} warn={adWarn}
+              sub={`ad spend ÷ ${num(pc.registrantsOnAdDays)} registrants on days with ad data`} warn={adWarn}
               delta={<Delta cur={cur.costPerContact} prev={prev.costPerContact} kind="count" better="down" label={vsLabel} money />} />
-            <Card title="Registered" value={num(cur.registered)} sub={`for the ${held.length} webinar${held.length === 1 ? "" : "s"} held in these dates`}
-              info={<p>Unique people registered for each webinar held in this period, added up across webinars (someone registered for two counts twice).</p>}
-              delta={<Delta cur={cur.registered} prev={prev.registered} kind="count" label={vsLabel} />} />
           </div>
 
           {weekRows.map((w) => {
@@ -487,21 +486,21 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         <Section title="16 · Results by ad"
           intro={<>Everyone who signed up in these dates, by the ad in their link (campaign / ad set / ad), and what they did since. {metaOn
             ? `Verdict: Cut = ${usd(2 * (t.costPerCloseMax ?? 3000))} spent with no high-ticket buyer; Scale = 2+ high-ticket buyers at ${usd(t.costPerCloseMax ?? 3000)} or less each; Too early = under ${usd(t.costPerCloseMax ?? 3000)} spent.`
-            : "Spend, cost per contact captured and the cut / scale call per ad arrive with the Meta token."} Gave name and contact, booked and partials count people by the ad of their first registration (gave = booked + partials on every row). Attended and stayed come from Zoom (Nov 12 on).</>}>
+            : "Spend, cost per contact captured and the cut / scale call per ad arrive with the Meta token."} Registrants, partials and booked count people by the ad of their first registration in these dates (registrants = partials + booked on every row). Attended and stayed come from Zoom (Nov 12 on).</>}>
           <div className="table-wrap">
             <table className="ads-table">
               <thead>
                 <tr>
-                  <th>Ad</th><th>Verdict</th><th>Spend</th><th>Registered</th><th>Gave name and contact</th><th>Booked a call</th><th>Partials</th><th>Cost / contact captured</th><th>Attended</th><th>Stayed to pitch</th>
+                  <th>Ad</th><th>Verdict</th><th>Spend</th><th>Webinar registrants</th><th>Partials</th><th>Booked a call</th><th>Cost / contact captured</th><th>Attended</th><th>Stayed to pitch</th>
                   <th>Bought (Whop)</th><th>High-ticket buyers</th><th>High-ticket cash</th><th>Cost / HT buyer</th><th>Cash per $1</th><th>CTR</th><th>Views / person (7d)</th>
                 </tr>
               </thead>
               <tbody>
-                {adRows.length === 0 && <tr><td colSpan={17} className="muted">No sign-ups in these dates.</td></tr>}
+                {adRows.length === 0 && <tr><td colSpan={16} className="muted">No sign-ups in these dates.</td></tr>}
                 {adRows.map((r) => {
                   const v = verdict(r, t);
                   const unknown = !r.ad && !r.adset && !r.campaign;
-                  const pr = adPartials.get(adKey(r.campaign, r.adset, r.ad)) ?? { gave: 0, booked: 0, partials: 0 };
+                  const pr = adPartials.get(adKey(r.campaign, r.adset, r.ad)) ?? { registrants: 0, booked: 0, partials: 0 };
                   return (
                     <tr key={`${r.campaign}|${r.adset}|${r.ad}`}>
                       <td className="ad-cell">
@@ -511,11 +510,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                       </td>
                       <td>{v ? <span className={`v ${v.key}`} title={v.why}>{v.label}</span> : <span className="muted">—</span>}</td>
                       <td>{r.spend === null ? <span className="muted">—</span> : usd(r.spend)}</td>
-                      <td>{num(r.registrants)}</td>
-                      <td>{num(pr.gave)}</td>
+                      <td>{num(pr.registrants)}</td>
+                      <td>{num(pr.partials)} <span className="muted small">{pr.registrants ? pctOf(pr.partials / pr.registrants, 0) : ""}</span></td>
                       <td>{num(pr.booked)}</td>
-                      <td>{num(pr.partials)} <span className="muted small">{pr.gave ? pctOf(pr.partials / pr.gave, 0) : ""}</span></td>
-                      <td>{r.spend !== null && pr.gave ? usd(r.spend / pr.gave, 2) : <span className="muted">—</span>}</td>
+                      <td>{r.spend !== null && pr.registrants ? usd(r.spend / pr.registrants, 2) : <span className="muted">—</span>}</td>
                       <td>{num(r.attended)}</td>
                       <td>{num(r.stayed)}</td>
                       <td>{num(r.buyers)}</td>
@@ -533,12 +531,12 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           </div>
         </Section>
 
-        <Section title="Webinars, one by one" intro="Each webinar held in these dates. Spend per webinar splits each day's spend across the webinars people signed up for that day. Gave contact and partials count people under the webinar their first registration picked.">
+        <Section title="Webinars, one by one" intro="Each webinar held in these dates. Spend per webinar splits each day's spend across the webinars people signed up for that day. Registered = partials + booked a call: the people registered for that webinar, each once.">
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Webinar</th><th>Registered</th><th>Gave contact</th><th>Partials</th><th>Spend</th><th>Cost / reg</th><th>Attended</th><th>Stayed</th>
+                  <th>Webinar</th><th>Registered</th><th>Partials</th><th>Booked a call</th><th>Spend</th><th>Cost / reg</th><th>Attended</th><th>Stayed</th>
                   <th>Buyers</th><th>Cash</th><th>$97 sales</th><th>Onboarding showed</th><th>HT cash</th><th>PIF</th>
                 </tr>
               </thead>
@@ -547,9 +545,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                 {held.map((s) => (
                   <tr key={s.session_at.toISOString()}>
                     <td>{sessionLabel(s.session_at)}</td>
-                    <td>{num(s.registrants)}</td>
-                    {(() => { const sp = sessionPartials.get(s.session_at.toISOString()) ?? { gave: 0, booked: 0, partials: 0 };
-                      return <><td>{num(sp.gave)}</td><td>{num(sp.partials)} <span className="muted small">{sp.gave ? pctOf(sp.partials / sp.gave, 0) : ""}</span></td></>; })()}
+                    {(() => { const sp = sessionPartials.get(s.session_at.toISOString()) ?? { registrants: 0, booked: 0, partials: 0 };
+                      return <><td>{num(sp.registrants)}</td><td>{num(sp.partials)} <span className="muted small">{sp.registrants ? pctOf(sp.partials / sp.registrants, 0) : ""}</span></td><td>{num(sp.booked)}</td></>; })()}
                     <td>{spendComplete(s.reg_rows, s.covered_rows) ? usd(s.ad_spend) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
                     <td>{spendComplete(s.reg_rows, s.covered_rows) ? usd(div(s.ad_spend, s.registrants), 2) : <span className="muted" title="ad spend missing for some sign-up days">—</span>}</td>
                     <td>{s.attendees === null ? "—" : <>{num(s.attendees)} · {pct(s.attendees, s.registrants)} <span className="muted small">{s.attendance_source === "zoom" ? "Zoom" : "tracker"}</span></>}</td>
@@ -596,7 +593,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <summary>How each number is calculated</summary>
           <ul className="defs">
             <li><b>Numbered cards (1–16)</b> follow the KPI list. Webinar numbers cover webinars held in the selected dates; a purchase belongs to the most recent webinar the buyer registered for before paying (matched by email).</li>
-            <li><b>Gave name and contact</b> = people who gave a name plus an email or phone (the webinar form) in the dates, counted once however many GHL contacts they have (same name and email, or same name and phone, is one person), dated by the first time they gave it. <b>Partials</b> = those who have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick; a cancelled or missed booking still counts as booked. <b>Cost per contact captured</b> = ad spend ÷ everyone who gave name and contact (not ÷ partials: that would rise exactly when booking improves). Test entries and the team (GHL users, TRC and agency addresses) are left out of every number on the page.</li>
+            <li><b>Webinar registrants</b> = people who registered for a webinar in the dates (name plus email or phone), each counted once however many registrations or GHL contacts they have (same name and email, or same name and phone, is one person). <b>Partials</b> = registrants who have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick. <b>Booked a call</b> = the rest; a cancelled or missed booking still counts as booked. Registrants = partials + booked a call. <b>Cost per contact captured</b> = ad spend ÷ webinar registrants (not ÷ partials: that would rise exactly when booking improves). Test entries and the team (GHL users, TRC and agency addresses) are left out of every number on the page.</li>
             <li><b>Attendance</b> = people who showed up ÷ people registered. From Zoom (Tiffany&apos;s Personal Meeting Room is the webinar) when it has the webinar; before Nov 12, the show-ups the team types into the tracker. <b>Stayed to pitch</b> = still in the room {PITCH_MINUTE} minutes after it started (Zoom only).</li>
             <li><b>Onboarding</b> = Leap Welcome Calls, including reschedules. Showed = marked so in GHL, otherwise someone other than the team joined the call&apos;s Zoom meeting.</li>
             <li><b>High ticket</b> = Ignite and Mastermind on Whop. <b>Cash</b> = Whop payments net of refunds; failed checkouts never count. <b>Paid in full</b> = card/PayPal, all within 7 days of the first payment. <b>Third-party financing</b> = Sezzle, Klarna, Afterpay, ClarityPay or Splitit. <b>Payment plan</b> = Whop splits it.</li>
