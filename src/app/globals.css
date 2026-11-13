@@ -242,3 +242,6 @@ section .grid + .week { margin-top: 18px; }
   .metric.big .metric-value { font-size: 30px; }
 }
 .pill { border-radius: 10px; }
+/* the date presets keep each label on one line; the row wraps on a narrow screen instead */
+.bar .seg { flex-wrap: wrap; }
+.bar .seg a { white-space: nowrap; }

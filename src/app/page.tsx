@@ -12,7 +12,9 @@ import { Card, DailyChart, Delta, Info, Section } from "./ui";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const RANGES = [7, 30, 60, 90] as const;
+const RANGES = [1, 2, 7, 30, 60, 90] as const;
+/** The date presets' names: 1 = today, 2 = today and yesterday (Tyler, 2026-11-13), the rest the last N days. */
+const rangeName = (n: number) => (n === 1 ? "Today" : n === 2 ? "Today and yesterday" : `${n} days`);
 const DAY = 86_400_000;
 /** Show a warning when the last successful sync is older than this (it runs every hour). */
 const STALE_AFTER_MS = 3 * 60 * 60 * 1000;
@@ -122,7 +124,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const to = toYmd === today ? now : startOfLaDay(shiftDays(toYmd, 1));
   const prevFrom = startOfLaDay(shiftDays(fromYmd, -days));
   const prevToYmd = shiftDays(fromYmd, -1);
-  const periodLabel = custom ? `${shortDay(fromYmd)} – ${shortDay(toYmd)}` : `the last ${days} days (${shortDay(fromYmd)} – ${shortDay(toYmd)})`;
+  const periodLabel = custom ? `${shortDay(fromYmd)} – ${shortDay(toYmd)}`
+    : days === 1 ? `today (${shortDay(toYmd)})`
+    : days === 2 ? `today and yesterday (${shortDay(fromYmd)} – ${shortDay(toYmd)})`
+    : `the last ${days} days (${shortDay(fromYmd)} – ${shortDay(toYmd)})`;
   const vsLabel = "vs before";
   const link = (o: { days?: number; cmp?: string; keepCustom?: boolean }) => {
     const c = (o.cmp ?? cmp) === "final" ? "&cmp=final" : "";
@@ -250,7 +255,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           </div>
           <div className="bar-filters">
             <nav className="seg" aria-label="Date range">
-              {RANGES.map((r) => <a key={r} href={link({ days: r })} className={!custom && r === days ? "active" : ""}>{r} days</a>)}
+              {RANGES.map((r) => <a key={r} href={link({ days: r })} className={!custom && r === days ? "active" : ""}>{rangeName(r)}</a>)}
             </nav>
             <form method="get" action="/" className={`range-form${custom ? " active" : ""}`} aria-label="Custom dates">
               <input type="date" name="from" defaultValue={fromYmd} max={today} required aria-label="From" />
@@ -261,7 +266,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             </form>
           </div>
           <p className="summary">
-            Showing <b>{periodLabel}</b> · compared with <b>{shortDay(shiftDays(fromYmd, -days))} – {shortDay(prevToYmd)}</b> · times Pacific
+            Showing <b>{periodLabel}</b> · compared with <b>{days === 1 ? shortDay(prevToYmd) : `${shortDay(shiftDays(fromYmd, -days))} – ${shortDay(prevToYmd)}`}</b> · times Pacific
           </p>
         </div>
       </div>
