@@ -31,6 +31,12 @@ export async function GET(request: Request) {
     ["sessionMetrics", () => sessionMetrics(from, now)],
     ["lastSync", () => lastSync()],
     ["lastSuccessfulSync", () => lastSuccessfulSync()],
+    // the hourly scheduler (scripts/schedule.mjs): the job and its last runs; fails here if pg_cron is not installed
+    ["hourly scheduler", () => db()`select j.jobname, j.schedule, j.active,
+      (select json_agg(json_build_object('at', d.start_time, 'status', d.status, 'message', left(d.return_message, 200)) order by d.start_time desc)
+        from (select * from cron.job_run_details where jobid = j.jobid order by start_time desc limit 3) d) as last_runs
+      from cron.job j where j.jobname = 'trc-sync-hourly'`],
+    ["recent syncs", () => db()`select trigger, started_at, finished_at, ok from trc.sync_runs order by id desc limit 5`],
   ];
   const out: Array<{ step: string; ms: number; ok: boolean; note?: string }> = [];
   if (new URL(request.url).searchParams.get("page") === "1") {

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/migrate.mjs && next build",
+    "build": "node scripts/migrate.mjs && node scripts/schedule.mjs && next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types src/**/*.test.ts"

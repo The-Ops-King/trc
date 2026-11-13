@@ -413,9 +413,14 @@ async function syncTargets(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
   return { ok: true, detail: { targets: Object.fromEntries(rows.map((r) => [r.name, r.value])) } };
 }
 
-export async function runSync(trigger: "cron" | "manual", budgetMs = 270_000) {
+export async function runSync(trigger: "cron" | "hourly" | "manual", budgetMs = 270_000): Promise<{ ok: boolean; results: Record<string, Result>; skipped?: string }> {
   const sql = db();
   const c: Ctx = { sql, deadline: Date.now() + budgetMs };
+  // One sync at a time: the hourly job, the daily cron and Sync now can land together. A run still open after 10 minutes died
+  // (the route stops at 5), so it no longer holds the next one back.
+  const [running] = await sql<{ started_at: Date }[]>`
+    select started_at from trc.sync_runs where finished_at is null and started_at > now() - interval '10 minutes' order by id desc limit 1`;
+  if (running) return { ok: true, results: {}, skipped: `a sync started at ${running.started_at.toISOString()} is still running` };
   const [run] = await sql<{ id: number }[]>`insert into trc.sync_runs (trigger) values (${trigger}) returning id`;
   const results: Record<string, Result> = {};
 

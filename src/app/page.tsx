@@ -13,8 +13,8 @@ export const maxDuration = 60;
 
 const RANGES = [7, 30, 60, 90] as const;
 const DAY = 86_400_000;
-/** Show a warning when the last successful sync is older than this. */
-const STALE_AFTER_MS = 36 * 60 * 60 * 1000;
+/** Show a warning when the last successful sync is older than this (it runs every hour). */
+const STALE_AFTER_MS = 3 * 60 * 60 * 1000;
 /** Give up well before Vercel's 60s limit, so a stalled database shows a message instead of a timeout page. */
 const PAGE_DEADLINE_MS = 25_000;
 
@@ -201,7 +201,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   const stale = !lastOk || now.getTime() - lastOk.getTime() > STALE_AFTER_MS;
   const failedSources = Object.entries(sync?.detail ?? {}).filter(([, v]) => !v.ok).map(([k]) => k);
   const warnings: string[] = [];
-  if (stale) warnings.push("The data is more than 36 hours old. Press Sync now; if that fails, see Sync status at the bottom.");
+  if (stale) warnings.push("The data is more than 3 hours old (it normally updates every hour). Press Sync now; if that fails, see Sync status at the bottom.");
   if (failedSources.length) warnings.push(`The last sync failed for: ${failedSources.join(", ")}. Details under Sync status at the bottom.`);
   if (!metaOn) warnings.push(`Meta isn't connected: ad spend, clicks, CPC and outbound CTR come from the team's tracker (FB Stats), and Results by ad has no spend per ad yet.`);
   if (adStale) warnings.push(`The tracker has no ad spend after ${shortDay(adStale)}, so spend for later days is missing and costs after that date aren't shown.`);
