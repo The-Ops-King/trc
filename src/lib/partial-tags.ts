@@ -1,7 +1,7 @@
 // The partial tag in GHL follows the dashboard's partials exactly (Tyler, 2026-11-13). Every hourly sync reconciles it from the
 // same dataset the dashboard reads (loadFunnelPeople): the tag goes on each partial's main contact (their form contact) and comes
 // off once they book. Only contacts from the funnel the dashboard covers (the Standout webinar form) are touched; a contact
-// outside it that carries the tag is left alone. Each run covers everyone, so there is no separate backfill.
+// outside it that carries the tag is left alone, and so is anyone who gave their contact before PARTIAL_TAGS_FROM. Each run covers everyone, so there is no separate backfill.
 // Writes only when PARTIAL_TAGS=live; otherwise it is a dry run that reports what it would change.
 import type postgres from "postgres";
 import * as ghl from "./ghl";
@@ -9,6 +9,12 @@ import { loadFunnelPeople } from "./dash";
 
 /** The tag's name in TRC's GHL (Tyler: "update the tag names to partial"). */
 export const PARTIAL_TAG = "partial";
+
+/**
+ * Only people who gave their contact on or after this day (Pacific) are tagged or untagged (Tyler, 2026-11-13: "just do the
+ * ones since Nov 1"). Funnel contacts from before it are left alone either way. The dashboard's counts cover every date.
+ */
+export const PARTIAL_TAGS_FROM = new Date("2026-11-01T07:00:00Z");   // 2026-11-01 00:00 PDT
 
 export type TagPlan = {
   mode: "dry-run" | "live";
@@ -46,8 +52,9 @@ export async function reconcilePartialTags(sql: postgres.Sql, creds: ghl.GhlCred
   const { people, registrations, appointments } = await loadFunnelPeople();
   if (!registrations || !appointments || !people.length) return { ...base, aborted: `empty dataset (registrations ${registrations}, appointments ${appointments}, people ${people.length})` };
 
-  const funnel = new Set(people.flatMap((p) => p.contactIds));
-  const desired = new Set(people.filter((p) => !p.booked && p.contactId).map((p) => p.contactId!));
+  const inScope = people.filter((p) => p.addedAt >= PARTIAL_TAGS_FROM);
+  const funnel = new Set(inScope.flatMap((p) => p.contactIds));
+  const desired = new Set(inScope.filter((p) => !p.booked && p.contactId).map((p) => p.contactId!));
   const have = new Set((await ghl.contactsWithTag(creds, PARTIAL_TAG))
     .filter((k) => k.tags.some((t) => t.toLowerCase() === PARTIAL_TAG)).map((k) => k.id));
   const toAdd = [...desired].filter((id) => !have.has(id));
