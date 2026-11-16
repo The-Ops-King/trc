@@ -32,6 +32,7 @@ export type CalendarEvent = {
   id: string;
   calendarId: string;
   contactId?: string;
+  assignedUserId?: string;
   startTime: string;
   appointmentStatus?: string;
   address?: string;

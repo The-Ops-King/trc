@@ -7,6 +7,7 @@ import { adKey, countPartials, partialsByAd, partialsBySession, type PartialCoun
 import { judge, type Targets } from "@/lib/targets";
 import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } from "@/lib/format";
 import { laWallTimeToUtc } from "@/lib/session";
+import { CALL_HOSTS } from "@/lib/config";
 import { Card, DailyChart, Delta, Info, Section } from "./ui";
 
 export const dynamic = "force-dynamic";
@@ -102,7 +103,7 @@ function verdict(r: AdRow, t: Targets): { key: string; label: string; why: strin
   return { key: "watch", label: "Watch", why: "Not enough to call either way" };
 }
 
-export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string; cmp?: string; from?: string; to?: string }> }) {
+export default async function Dashboard({ searchParams }: { searchParams: Promise<{ days?: string; synced?: string; cmp?: string; from?: string; to?: string; host?: string }> }) {
   if (!(await hasSession())) redirect("/login");
   const sp = await searchParams;
   // This week's webinars compare against last week's at the same point in time (default) or last week's final numbers.
@@ -129,10 +130,15 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     : days === 2 ? `today and yesterday (${shortDay(fromYmd)} – ${shortDay(toYmd)})`
     : `the last ${days} days (${shortDay(fromYmd)} – ${shortDay(toYmd)})`;
   const vsLabel = "vs before";
-  const link = (o: { days?: number; cmp?: string; keepCustom?: boolean }) => {
+  // The call numbers for everyone, Nick only or Tiffany only (Tyler, 2026-11-16); the rest of the page is everyone's either way.
+  const hostPick = CALL_HOSTS.find((h) => h.key === sp.host) ?? null;
+  const link = (o: { days?: number; cmp?: string; keepCustom?: boolean; host?: string | null }) => {
     const c = (o.cmp ?? cmp) === "final" ? "&cmp=final" : "";
-    return custom && o.keepCustom !== false && o.days === undefined ? `/?from=${custom.from}&to=${custom.to}${c}` : `/?days=${o.days ?? days}${c}`;
+    const hk = o.host === undefined ? hostPick?.key ?? null : o.host;
+    const h = hk ? `&host=${hk}` : "";
+    return custom && o.keepCustom !== false && o.days === undefined ? `/?from=${custom.from}&to=${custom.to}${c}${h}` : `/?days=${o.days ?? days}${c}${h}`;
   };
+  const callsBy = hostPick ? `${hostPick.name}'s calls` : "everyone's calls";
   // Weeks run Monday to Sunday, Pacific.
   const isoDow = ((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7) + 1;
   const thisMonYmd = shiftDays(today, -(isoDow - 1));
@@ -144,7 +150,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     data = await withDeadline(
       loadDashboard(from, to, prevFrom, custom ? to : new Date(now.getTime() + 14 * DAY), weeks, (label, ms) => {
         if (ms > 2000) console.warn(`[dashboard] slow query ${label}: ${ms}ms`);
-      }),
+      }, hostPick?.ghlUserId ?? null),
       PAGE_DEADLINE_MS,
     );
   } catch (err) {
@@ -262,11 +268,12 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
               <span className="muted small">to</span>
               <input type="date" name="to" defaultValue={toYmd} max={today} required aria-label="To" />
               {cmp === "final" && <input type="hidden" name="cmp" value="final" />}
+              {hostPick && <input type="hidden" name="host" value={hostPick.key} />}
               <button type="submit">Apply</button>
             </form>
           </div>
           <p className="summary">
-            Showing <b>{periodLabel}</b> · compared with <b>{days === 1 ? shortDay(prevToYmd) : `${shortDay(shiftDays(fromYmd, -days))} – ${shortDay(prevToYmd)}`}</b> · times Pacific
+            Showing <b>{periodLabel}</b> · compared with <b>{days === 1 ? shortDay(prevToYmd) : `${shortDay(shiftDays(fromYmd, -days))} – ${shortDay(prevToYmd)}`}</b> · calls: <b>{callsBy}</b> · times Pacific
           </p>
         </div>
       </div>
@@ -284,12 +291,12 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             sub={`${num(cur.attendees)} of ${num(cur.attRegs)} registered`}
             info={<p>People who showed up ÷ people registered for that webinar, for webinars held in this period. From Zoom (Tiffany&apos;s room) when it has the webinar, otherwise the show-ups the team types into the tracker.</p>}
             delta={<Delta cur={cur.attendance} prev={prev.attendance} kind="rate" label={vsLabel} />} />
-          <Card big title="Onboarding show rate" value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
+          <Card big title={hostPick ? `${hostPick.name}'s show rate` : "Onboarding show rate"} value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
             sub={`${num(funnel.onb_attended)} of ${num(cur.onbKnown)} calls with a result`}
             warn={onbUnknown ? `${num(onbUnknown)} without a result` : undefined}
             info={<p>Leap Welcome calls (and their reschedules) in this period: showed ÷ calls with a result. A call is showed when it&apos;s marked so in GHL or someone other than the team joined its Zoom meeting.</p>}
             delta={<Delta cur={cur.showRate} prev={prev.showRate} kind="rate" label={vsLabel} />} />
-          <Card big title="Call → high ticket" value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
+          <Card big title={hostPick ? `${hostPick.name}'s call → high ticket` : "Call → high ticket"} value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
             sub={`${num(funnel.ht_after_onb_attended)} high-ticket buyers of ${num(funnel.onb_attended)} who showed`}
             info={<p>People who bought Ignite or Mastermind on Whop after showing to an onboarding call, ÷ people who showed to one, in this period.</p>}
             delta={<Delta cur={cur.callToHt} prev={prev.callToHt} kind="rate" label={vsLabel} />} />
@@ -429,7 +436,15 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           )}
         </Section>
 
-        <Section title="Onboarding calls and high ticket" intro={<>Leap Welcome calls (and reschedules) by the day of the call; high-ticket sales (Ignite, Mastermind) from Whop by payment date.</>}>
+        <Section title="Onboarding calls and high ticket"
+          aside={(
+            <nav className="seg small-seg" aria-label="Whose calls">
+              <span className="muted small">Calls</span>
+              <a href={link({ host: null })} className={!hostPick ? "active" : ""}>All</a>
+              {CALL_HOSTS.map((h) => <a key={h.key} href={link({ host: h.key })} className={hostPick?.key === h.key ? "active" : ""}>{h.name}</a>)}
+            </nav>
+          )}
+          intro={<>Leap Welcome calls (and reschedules) by the day of the call, {hostPick ? <><b>{hostPick.name}&apos;s calls only</b> (the calls GHL assigned to {hostPick.name})</> : <>everyone&apos;s (including bookings from before the calendar assigned a host, through Oct 29)</>}; high-ticket sales (Ignite, Mastermind) from Whop by payment date, every buyer{hostPick ? `, with "from calls" meaning ${hostPick.name}'s calls` : ""}.</>}>
           <div className="grid g4">
             <Card n={8} title="Onboarding calls attended" value={num(funnel.onb_attended)} sub={`of ${num(funnel.onb_booked)} booked`}
               warn={onbUnknown ? `${num(onbUnknown)} without a result` : undefined}

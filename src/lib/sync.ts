@@ -153,6 +153,7 @@ async function syncAppointments(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
         calendar_id: cal.id,
         kind: known.get(cal.id) ?? "other",
         contact_id: e.contactId ?? null,
+        host_user_id: e.assignedUserId || null,
         email: e.appointmentMeta?.defaultFormDetails?.email?.trim() || null,
         start_at: new Date(e.startTime),
         appointment_status: e.appointmentStatus ?? null,
@@ -164,7 +165,8 @@ async function syncAppointments(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
           on conflict (id) do update set
             calendar_id = excluded.calendar_id, kind = excluded.kind, contact_id = excluded.contact_id,
             email = coalesce(excluded.email, trc.appointments.email), start_at = excluded.start_at,
-            appointment_status = excluded.appointment_status, meeting_url = excluded.meeting_url, synced_at = now()`;
+            appointment_status = excluded.appointment_status, meeting_url = excluded.meeting_url, host_user_id = excluded.host_user_id,
+            synced_at = now()`;
         upserted += rows.length;
       }
     }

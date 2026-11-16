@@ -46,7 +46,8 @@ export type SessionRow = {
  * proportion to that day's registrations for each session. Period totals in
  * periodTotals() use the unallocated numbers.
  */
-export async function sessionMetrics(from: Date, to: Date): Promise<SessionRow[]> {
+/** `host`: only calls that GHL user hosted (the dashboard's host toggle); null = everyone's. */
+export async function sessionMetrics(from: Date, to: Date, host: string | null = null): Promise<SessionRow[]> {
   const sql = db();
   return sql<SessionRow[]>`
     with s as (
@@ -108,7 +109,7 @@ export async function sessionMetrics(from: Date, to: Date): Promise<SessionRow[]
              count(distinct email_key) filter (
                where attended is null and start_at < now() and coalesce(appointment_status, '') <> 'cancelled'
              )::int as unknown
-      from trc.onboarding_attribution where session_at is not null
+      from trc.onboarding_attribution where session_at is not null and (${host}::text is null or host_user_id = ${host})
       group by session_at
     ),
     ht as (
@@ -122,11 +123,11 @@ export async function sessionMetrics(from: Date, to: Date): Promise<SessionRow[]
              count(distinct pa.email_key) filter (where exists (
                select 1 from trc.onboarding_attribution o
                where o.email_key = pa.email_key and o.start_at <= pa.first_paid_at
-                 and coalesce(o.appointment_status, '') <> 'cancelled'
+                 and coalesce(o.appointment_status, '') <> 'cancelled' and (${host}::text is null or o.host_user_id = ${host})
              ))::int as after_onb_booked,
              count(distinct pa.email_key) filter (where exists (
                select 1 from trc.onboarding_attribution o
-               where o.email_key = pa.email_key and o.start_at <= pa.first_paid_at and o.attended
+               where o.email_key = pa.email_key and o.start_at <= pa.first_paid_at and o.attended and (${host}::text is null or o.host_user_id = ${host})
              ))::int as after_onb_attended
       from pa where pa.product_group in ('ignite', 'mastermind')
       group by pa.session_at
@@ -244,12 +245,14 @@ export type PeriodFunnel = {
  * calls by their scheduled time, purchases by first payment, cash by payment date.
  * Covers every buyer, not only webinar registrants.
  */
-export async function periodFunnel(from: Date, to: Date): Promise<PeriodFunnel> {
+/** `host`: only calls that GHL user hosted (the dashboard's host toggle); null = everyone's. Sales and cash are everyone's either way. */
+export async function periodFunnel(from: Date, to: Date, host: string | null = null): Promise<PeriodFunnel> {
   const sql = db();
   const [row] = await sql<PeriodFunnel[]>`
     with onb as (
       select * from trc.onboarding_attribution
       where start_at >= ${from} and start_at < ${to} and coalesce(appointment_status, '') <> 'cancelled'
+        and (${host}::text is null or host_user_id = ${host})
     ),
     ht as (
       select * from trc.purchases
@@ -263,6 +266,7 @@ export async function periodFunnel(from: Date, to: Date): Promise<PeriodFunnel> 
       (select count(distinct ht.email_key)::int from ht where exists (
          select 1 from trc.onboarding_attribution o
          where o.email_key = ht.email_key and o.start_at <= ht.first_paid_at and o.attended
+           and (${host}::text is null or o.host_user_id = ${host})
        )) as ht_after_onb_attended,
       (select coalesce(sum(net_usd), 0) from trc.paid_payments
         where product_group in ('ignite', 'mastermind') and paid_at >= ${from} and paid_at < ${to}) as ht_cash,
@@ -327,12 +331,12 @@ export async function registrantsAsOf(from: Date, to: Date, asOf: Date): Promise
  * query waits for the one before. The diagnostic endpoint runs this same function.
  */
 
-export async function loadDashboard(from: Date, to: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void) {
+export async function loadDashboard(from: Date, to: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void, host: string | null = null) {
   // Runs queued behind any webhook work on this server (see serial in db.ts).
-  return serial(() => loadDashboardNow(from, to, prevFrom, sessionsTo, weeks, onStep));
+  return serial(() => loadDashboardNow(from, to, prevFrom, sessionsTo, weeks, onStep, host));
 }
 
-async function loadDashboardNow(from: Date, to: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void) {
+async function loadDashboardNow(from: Date, to: Date, prevFrom: Date, sessionsTo: Date, weeks: WeekBounds, onStep?: (label: string, ms: number) => void, host: string | null = null) {
   const step = async <T,>(label: string, run: () => Promise<T>): Promise<T> => {
     const t0 = Date.now();
     try { return await run(); } finally { onStep?.(label, Date.now() - t0); }
@@ -340,22 +344,22 @@ async function loadDashboardNow(from: Date, to: Date, prevFrom: Date, sessionsTo
   // attendance from Zoom events that came in since the last rebuild
   await step("zoom.rebuildDirty", () => rebuildDirty(db(), 20));
   const totals = await step("periodTotals", () => periodTotals(from, to));
-  const funnel = await step("periodFunnel", () => periodFunnel(from, to));
-  const sessions = await step("sessionMetrics", () => sessionMetrics(from, sessionsTo));
+  const funnel = await step("periodFunnel", () => periodFunnel(from, to, host));
+  const sessions = await step("sessionMetrics", () => sessionMetrics(from, sessionsTo, host));
   const sync = await step("lastSync", () => lastSync());
   const lastOk = await step("lastSuccessfulSync", () => lastSuccessfulSync());
   const pTotals = await step("prev.periodTotals", () => periodTotals(prevFrom, from));
-  const pFunnel = await step("prev.periodFunnel", () => periodFunnel(prevFrom, from));
-  const pSessions = await step("prev.sessionMetrics", () => sessionMetrics(prevFrom, from));
+  const pFunnel = await step("prev.periodFunnel", () => periodFunnel(prevFrom, from, host));
+  const pSessions = await step("prev.sessionMetrics", () => sessionMetrics(prevFrom, from, host));
   // this week's and last week's webinars, each by its own date (Monday to Sunday, Pacific)
-  const weekSessions = await step("weeks.sessionMetrics", () => sessionMetrics(weeks.lastMon, weeks.nextMon));
+  const weekSessions = await step("weeks.sessionMetrics", () => sessionMetrics(weeks.lastMon, weeks.nextMon, host));
   const thisWeekPeople = await step("weeks.thisWeekPeople", () => sessionRegistrants(weeks.thisMon, weeks.nextMon));
   const lastWeekPeople = await step("weeks.lastWeekPeople", () => sessionRegistrants(weeks.lastMon, weeks.thisMon));
   const lastWeekAsOf = await step("weeks.lastWeekAsOf", () => registrantsAsOf(weeks.lastMon, weeks.thisMon, new Date(Date.now() - 7 * 86_400_000)));
   const targets = await step("targets", () => loadTargets());
   const ads = await step("resultsByAd", () => resultsByAd(from, to));
   const days = await step("daily", () => daily(from, to));
-  const buyers = await step("highTicketBuyers", () => highTicketBuyers(from, to));
+  const buyers = await step("highTicketBuyers", () => highTicketBuyers(from, to, host));
   const ltv = await step("ltvCac", () => ltvCac(from, to, totals.ad_spend));
   const pLtv = await step("prev.ltvCac", () => ltvCac(prevFrom, from, pTotals.ad_spend));
   const funnelPeople = await step("partials", () => loadFunnelPeople());

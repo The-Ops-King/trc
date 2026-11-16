@@ -8,6 +8,15 @@ export const BACKFILL_START = "2026-08-01";
 /** How far back the calendars are read: a partial has never booked a call, ever, so bookings before the webinar funnel count. */
 export const APPOINTMENTS_FROM = "2024-01-01";
 
+/**
+ * Who hosts calls, by GHL user id, for the dashboard's host toggle (Tyler, 2026-11-16: Nick's numbers on their own, Tiffany's on
+ * hers, or both). A booking with no host (made before the round robin assigned anyone) counts under "All" only.
+ */
+export const CALL_HOSTS: ReadonlyArray<{ key: string; name: string; ghlUserId: string }> = [
+  { key: "nick", name: "Nick", ghlUserId: "H8UbUee6hajfvonGAHOS" },
+  { key: "tiffany", name: "Tiffany", ghlUserId: "mnOeNUNPmTiuwZSH890N" },
+];
+
 /** GHL forms whose submissions are webinar registrations. */
 export const REGISTRATION_FORMS = [
   { id: "tXDzMqHo7Yfrh2fzdMIC", name: "The Standout System Webinar Form - (Offer 2 Dates)" },

@@ -136,14 +136,15 @@ export type BuyerRow = {
 };
 
 /** High-ticket purchases (Ignite, Mastermind) whose first payment is in [from, to), newest first. */
-export async function highTicketBuyers(from: Date, to: Date): Promise<BuyerRow[]> {
+export async function highTicketBuyers(from: Date, to: Date, host: string | null = null): Promise<BuyerRow[]> {
   const sql = db();
   return sql<BuyerRow[]>`
     select pa.email_key as email,
            (select contact_id from trc.registrations r where lower(r.email) = pa.email_key and contact_id is not null order by created_at desc limit 1) as contact_id,
            pa.product_group, pa.first_paid_at, pa.cash_usd as cash, pa.payment_type, pa.session_at,
            (select bool_or(o.attended) from trc.onboarding_attribution o
-             where o.email_key = pa.email_key and o.start_at <= pa.first_paid_at and coalesce(o.appointment_status, '') <> 'cancelled') as onboarding_attended
+             where o.email_key = pa.email_key and o.start_at <= pa.first_paid_at and coalesce(o.appointment_status, '') <> 'cancelled'
+               and (${host}::text is null or o.host_user_id = ${host})) as onboarding_attended
     from trc.purchase_attribution pa
     where pa.product_group in ('ignite', 'mastermind') and pa.first_paid_at >= ${from} and pa.first_paid_at < ${to}
     order by pa.first_paid_at desc`;
