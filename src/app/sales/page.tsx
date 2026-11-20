@@ -35,7 +35,7 @@ const FLAG_LABEL: Record<Flag, string> = {
   close_no_cash: "Closed won or deposit with no Cash Collected",
   follow_up_no_date: "Follow-up with no Next Step Date",
   offer_unknown: "Showed, and neither Pitched nor the disposition says whether an offer was made",
-  zoom_disagrees: "Zoom attendance says the opposite of the Sales Call",
+  zoom_disagrees: "Zoom says the opposite: a prospect joined a call marked no-show or rescheduled, or nobody joined one marked showed",
   off_calendar: "The booking is not on one of the tracker's calendars",
   no_appointment: "The booking is not in GHL's calendars any more (deleted or moved off them)",
 };
@@ -74,13 +74,14 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
     console.error(`[sales] page data failed: ${err instanceof Error ? err.message : String(err)}`);
     return <main><Tabs active="sales" /><div className="notice err"><b>The sales tracker couldn&apos;t load.</b> The cause is in the Vercel logs under &quot;[sales]&quot;.</div></main>;
   }
-  const { calls, pays, missing, people, step, lastOk, recordCount } = data;
+  const { calls, pays, missing, zoomNoRecord, people, step, lastOk, recordCount } = data;
   const n = numbers(calls, from, to);
   const inRange = calls.filter((c) => c.slot_at! >= from && c.slot_at! < to);
   const whopInRange = pays.filter((p) => p.paid_at >= from && p.paid_at < to);
   const whopCash = whopInRange.reduce((a, p) => a + p.net_usd, 0);
   const mismatches = cashMismatches(calls, pays);
   const missingInRange = missing.filter((a) => a.start_at >= from && a.start_at < to);
+  const zoomInRange = zoomNoRecord.filter((z) => z.start_at >= from && z.start_at < to);
   const flagged = inRange.filter((c) => c.flags.length);
   const flagCounts = new Map<Flag, number>();
   for (const c of inRange) for (const f of c.flags) flagCounts.set(f, (flagCounts.get(f) ?? 0) + 1);
@@ -210,6 +211,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
               <tbody>
                 {(Object.keys(FLAG_LABEL) as Flag[]).map((f) => <tr key={f}><td>{FLAG_LABEL[f]}</td><td>{flagCounts.get(f) ?? 0}</td></tr>)}
                 <tr><td>Booked with Nick, past, and no Sales Call record</td><td>{missingInRange.length}</td></tr>
+                <tr><td>Zoom saw a prospect on a call with no Sales Call for that time (a call nobody logged)</td><td>{zoomInRange.length}</td></tr>
               </tbody>
             </table>
           </div>
@@ -224,6 +226,16 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
             </div>
           )}
         </Section>
+
+        {zoomInRange.length > 0 && (
+          <div className="table-wrap" style={{ marginTop: 10 }}>
+            <table>
+              <thead><tr><th>Zoom call, no Sales Call</th><th>When</th></tr></thead>
+              <tbody>{zoomInRange.map((z) => { const a = data.calls.find((c) => c.appointment_id === z.appointment_id); return (
+                <tr key={`${z.appointment_id}${z.start_at.toISOString()}`}><td>{a ? who(a) : z.appointment_id}</td><td>{slotText(z.start_at)}</td></tr>); })}</tbody>
+            </table>
+          </div>
+        )}
 
         <Section title="Call log" intro={`Every slot this period, ${inRange.length} in all, flagged ones first.`}>
           <div className="table-wrap">
@@ -251,7 +263,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
           <ul className="defs">
             <li><b>Calls</b>: GHL&apos;s TRC Sales Call records with closer Nick. Tiffany&apos;s calls are left out. Calendars: {SALES_TRACKER.calendars.map((k) => k.name).join(", ")}.</li>
             <li><b>One call per slot</b>: when a booking moves, the engine opens a record for the new slot and marks the old one rescheduled. A rescheduled slot is not a call, unless a recording, call length, objection or disposition is on it (then it showed and was moved afterwards). <b>Filed only</b> turns that off and reads every outcome as GHL has it.</li>
-            <li><b>Shows: Zoom</b> takes showed / no-show from Zoom attendance where Zoom saw the slot the booking is at now, and from the Sales Call everywhere else.</li>
+            <li><b>Zoom</b> is read per call: the meeting on the booking's link that started within an hour of the call's time. A prospect in it (not the team, not a note-taker bot) means the call happened, which counts as evidence like a recording; only the team or a bot in it means nobody came. No meeting seen says nothing. <b>Shows: Zoom</b> lets Zoom decide showed / no-show wherever it saw the call.</li>
             <li><b>Follow-up</b>: Call Type is follow-up, or the person already showed for an earlier call with Nick.</li>
             <li><b>Show rate</b> = shows ÷ (calls on calendar − not filed). <b>Close rate</b> = closed won ÷ calls on calendar; on shows = closed won ÷ shows. <b>Cash per call</b> = Sales Call cash ÷ calls on calendar.</li>
             <li><b>Test and team</b> bookings (team emails, test domains) are left out, as everywhere on the dashboard.</li>
