@@ -109,7 +109,8 @@ export type Flag =
   | "offer_unknown"           // showed, Pitched blank and the disposition does not say
   | "zoom_disagrees"          // Zoom says the other thing (a prospect joined a call marked otherwise, or none joined one marked showed)
   | "off_calendar"            // the appointment is not on a tracker calendar
-  | "no_appointment";         // the appointment is not in the synced calendars (deleted, or a test/team booking)
+  | "no_appointment"          // the appointment is not in the synced calendars (deleted, or a test/team booking)
+  | "no_sales_call";          // a booking with the closer that has no Sales Call (counted only with "Bookings with no Sales Call: count")
 
 export type Call = SalesCallRow & {
   packageFrom?: "sales_call" | "whop";   // where the package came from: the Sales Call, else the person's Whop products
@@ -162,6 +163,7 @@ export function classify(
       if (status === "moved" && zoom && !flags.includes("moved_after_call")) flags.push("moved_after_call");
       status = zoom ? "showed" : status === "moved" ? "moved" : "no_show";
     }
+    if (r.id.startsWith("booking:")) flags.push("no_sales_call");
     if (!a) flags.push("no_appointment");
     else if (!o.calendars.includes(a.calendar_id)) flags.push("off_calendar");
 
@@ -192,6 +194,19 @@ export function zoomWithoutRecord(zoomSeen: ZoomSeen[], rows: SalesCallRow[], ap
     if (!z.prospect || !a || !o.calendars.includes(a.calendar_id) || !a.host_user_id || !o.hostIds.includes(a.host_user_id)) return false;
     return !rows.some((r) => r.appointment_id === z.appointment_id && r.slot_at && Math.abs(r.slot_at.getTime() - z.start_at.getTime()) <= MATCH_MS);
   });
+}
+
+/**
+ * Tyler, 2026-11-20 ("we should have a toggle"): the closer's bookings on the tracker calendars that have no Sales Call at all (Jonathan
+ * Maher's Nov 13 cancel, made before the engine wrote Sales Calls), as rows the classifier reads like any other: a cancel is a cancel,
+ * a past one not filed, a future one upcoming. Counted only when the page's toggle says so; each is flagged no_sales_call.
+ */
+export function bookingRows(appts: Appt[], rows: SalesCallRow[], o: { calendars: ReadonlyArray<string>; hostIds: ReadonlyArray<string>; closer: string }): SalesCallRow[] {
+  const have = new Set(rows.map((r) => r.appointment_id));
+  return appts.filter((a) => o.calendars.includes(a.calendar_id) && a.host_user_id && o.hostIds.includes(a.host_user_id) && !have.has(a.id))
+    .map((a) => ({ id: `booking:${a.id}`, external_id: a.id, appointment_id: a.id, contact_id: a.contact_id ?? null, slot_at: a.start_at, closer: o.closer,
+      outcome: a.appointment_status === "cancelled" ? "cancelled" : null, disposition: null, objection: null, call_type: null, package: null, pitched: null,
+      cash_collected: null, contract_value: null, payment_terms: null, recording_url: null, duration_min: null, next_step_date: null, created_at: null, updated_at: null }));
 }
 
 /** Booked on a tracker calendar with a tracker closer as host, in the past, and the engine never made a Sales Call for it. */

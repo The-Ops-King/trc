@@ -38,9 +38,10 @@ const FLAG_LABEL: Record<Flag, string> = {
   zoom_disagrees: "Zoom says the opposite: a prospect joined a call marked no-show or rescheduled, or nobody joined one marked showed",
   off_calendar: "The booking is not on one of the tracker's calendars",
   no_appointment: "The booking is not in GHL's calendars any more (deleted or moved off them)",
+  no_sales_call: "A booking with Nick that has no Sales Call (counted because of the toggle)",
 };
 
-type SP = { week?: string; all?: string; basis?: string; shows?: string };
+type SP = { week?: string; all?: string; basis?: string; shows?: string; bookings?: string };
 
 export default async function SalesTracker({ searchParams }: { searchParams: Promise<SP> }) {
   if (!(await hasSession())) redirect("/login");
@@ -48,17 +49,19 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
   const now = new Date();
   const today = laYmd(now);
   const basis: Basis = sp.basis === "filed" ? "filed" : "evidence";
+  const bookings = sp.bookings === "count";
   const shows: ShowSource = sp.shows === "zoom" ? "zoom" : "salescall";
   const all = sp.all === "1";
   const weekMon = /^\d{4}-\d{2}-\d{2}$/.test(sp.week ?? "") ? mondayOf(sp.week!) : mondayOf(today);
   const from = all ? new Date(0) : startOfLaDay(weekMon);
   const to = all ? new Date(8.64e15) : startOfLaDay(shiftDays(weekMon, 7));
-  const link = (o: Partial<{ week: string; all: boolean; basis: Basis; shows: ShowSource }>) => {
+  const link = (o: Partial<{ week: string; all: boolean; basis: Basis; shows: ShowSource; bookings: boolean }>) => {
     const q = new URLSearchParams();
     const isAll = o.all ?? (o.week ? false : all);
     const wk = o.week ?? weekMon;
     if (isAll) q.set("all", "1"); else if (wk !== mondayOf(today)) q.set("week", wk);
     if ((o.basis ?? basis) === "filed") q.set("basis", "filed");
+    if (o.bookings ?? bookings) q.set("bookings", "count");
     if ((o.shows ?? shows) === "zoom") q.set("shows", "zoom");
     const s = q.toString();
     return `/sales${s ? `?${s}` : ""}`;
@@ -67,7 +70,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
   let data;
   try {
     data = await Promise.race([
-      loadSalesTracker({ now, basis, shows, dayStart: (d) => startOfLaDay(laYmd(d)) }),
+      loadSalesTracker({ now, basis, shows, bookings, dayStart: (d) => startOfLaDay(laYmd(d)) }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`no answer within ${PAGE_DEADLINE_MS / 1000}s`)), PAGE_DEADLINE_MS)),
     ]);
   } catch (err) {
@@ -123,6 +126,10 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
             <nav className="seg" aria-label="Read the records">
               <a href={link({ basis: "evidence" })} className={basis === "evidence" ? "active" : ""}>Filed + evidence</a>
               <a href={link({ basis: "filed" })} className={basis === "filed" ? "active" : ""}>Filed only</a>
+            </nav>
+            <nav className="seg" aria-label="Bookings with no Sales Call">
+              <a href={link({ bookings: false })} className={!bookings ? "active" : ""}>No Sales Call: leave out</a>
+              <a href={link({ bookings: true })} className={bookings ? "active" : ""}>No Sales Call: count</a>
             </nav>
           </div>
           <p className="summary">Nick&apos;s calls, {periodLabel} (weeks run Monday to Sunday, Pacific). One call per slot, from GHL&apos;s TRC Sales Call records.</p>
@@ -266,6 +273,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
             <li><b>Zoom</b> is read per call: the meeting on the booking's link that started within an hour of the call's time. A prospect in it (not the team, not a note-taker bot) means the call happened, which counts as evidence like a recording; only the team or a bot in it means nobody came. No meeting seen says nothing. <b>Shows: Zoom</b> lets Zoom decide showed / no-show wherever it saw the call.</li>
             <li><b>Follow-up</b>: Call Type is follow-up, or the person already showed for an earlier call with Nick.</li>
             <li><b>Show rate</b> = shows ÷ (calls on calendar − not filed). <b>Close rate</b> = closed won ÷ calls on calendar; on shows = closed won ÷ shows. <b>Cash per call</b> = Sales Call cash ÷ calls on calendar.</li>
+            <li><b>No Sales Call: count</b> adds Nick's bookings that never got a Sales Call (made before the engine wrote them, or missed): a cancelled one counts as a cancel, a past one as not filed. <b>Leave out</b> counts Sales Calls only.</li>
             <li><b>Test and team</b> bookings (team emails, test domains) are left out, as everywhere on the dashboard.</li>
           </ul>
         </details>
