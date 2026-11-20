@@ -1,6 +1,6 @@
 import "server-only";
 import type postgres from "postgres";
-import { PITCH_MINUTE, WEBINAR_ZOOM_IDS } from "./config";
+import { PITCH_MINUTE, SALES_TRACKER, WEBINAR_ZOOM_IDS } from "./config";
 import { isTestOrTeam } from "./people";
 export { eventRow, urlValidationAnswer, zoomSignatureOk } from "./zoom-webhook-core";
 
@@ -45,7 +45,7 @@ export async function rebuildInstance(sql: postgres.Sql, instanceUuid: string): 
     group by session_at order by abs(extract(epoch from session_at - ${start}::timestamptz)) limit 1`;
   const [call] = webinarRoom ? [] : await sql<Array<{ id: string }>>`
     select id from trc.appointments
-    where kind = 'onboarding' and meeting_url like ${"%" + first.zoom_id + "%"}
+    where (kind = 'onboarding' or calendar_id in ${sql(SALES_TRACKER.calendars.map((k) => k.id))}) and meeting_url like ${"%" + first.zoom_id + "%"}
       and start_at between ${new Date(start.getTime() - CALL_MATCH_MS)} and ${new Date(start.getTime() + CALL_MATCH_MS)}
     order by abs(extract(epoch from start_at - ${start}::timestamptz)) limit 1`;
   if (!session && !call) return unmatched();

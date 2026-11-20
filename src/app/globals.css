@@ -245,3 +245,5 @@ section .grid + .week { margin-top: 18px; }
 /* the date presets keep each label on one line; the row wraps on a narrow screen instead */
 .bar .seg { flex-wrap: wrap; }
 .bar .seg a { white-space: nowrap; }
+.tabs { margin: 10px 0 4px; }
+.tabs a { font-size: 14px; padding: 7px 16px; }

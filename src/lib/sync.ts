@@ -2,7 +2,8 @@ import "server-only";
 import type postgres from "postgres";
 import { db } from "./db";
 import { env } from "./env";
-import { APPOINTMENTS_FROM, BACKFILL_START, CALENDARS, EXCLUDED_WHOP_PAYMENT_IDS, REGISTRATION_FORMS, SESSION_FIELD_IDS, TRACKER_SHEET_ID } from "./config";
+import { APPOINTMENTS_FROM, BACKFILL_START, CALENDARS, EXCLUDED_WHOP_PAYMENT_IDS, REGISTRATION_FORMS, SALES_TRACKER, SESSION_FIELD_IDS, TRACKER_SHEET_ID } from "./config";
+import { salesCallRow } from "./sales-tracker";
 import * as sheet from "./sheet";
 import { parseSessionLabel } from "./session";
 import * as ghl from "./ghl";
@@ -352,10 +353,11 @@ async function syncZoom(c: Ctx, creds: zoom.ZoomCreds): Promise<Result> {
     if (candidates[0]) matched.push({ inst: candidates[0], kind: "webinar", sessionAt: session_at });
   }
 
-  // Match onboarding calls by Zoom meeting ID + start time.
+  // Match onboarding calls by Zoom meeting ID + start time. The sales tracker's calendars too (a calendar only Nick is on is not an
+  // onboarding calendar, but its calls need attendance all the same); the main tab reads attendance from onboarding calls only.
   const calls = await c.sql<{ id: string; start_at: Date; meeting_url: string | null }[]>`
     select id, start_at, meeting_url from trc.appointments
-    where kind = 'onboarding' and start_at >= ${new Date(fromMs)} and start_at <= now() and meeting_url like '%zoom.us%'`;
+    where (kind = 'onboarding' or calendar_id in ${c.sql(SALES_TRACKER.calendars.map((k) => k.id))}) and start_at >= ${new Date(fromMs)} and start_at <= now() and meeting_url like '%zoom.us%'`;
   for (const call of calls) {
     const mid = zoomMeetingId(call.meeting_url);
     if (!mid) continue;
@@ -464,6 +466,25 @@ async function syncTrackerSheet(c: Ctx, sheetId: string): Promise<Result> {
 }
 
 // ---------------------------------------------------------------------------
+// GHL: the TRC Sales Call records (the sales tracker tab). Read whole every run and replaced whole, so a record deleted in GHL
+// goes here too. A run that reads none while the table has some keeps the table and fails: an empty read is never taken as
+// "every call was deleted".
+// ---------------------------------------------------------------------------
+async function syncSalesCalls(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
+  const records = await ghl.listObjectRecords(creds, SALES_TRACKER.object);
+  const rows = records.map(salesCallRow);
+  const [stored] = await c.sql<{ n: number }[]>`select count(*)::int as n from trc.sales_calls`;
+  const n = stored?.n ?? 0;
+  if (!rows.length && n > 0) throw new Error(`GHL returned no Sales Call records but ${n} are stored; kept them`);
+  await c.sql.begin(async (tx) => {
+    await tx`delete from trc.sales_calls`;
+    for (let i = 0; i < rows.length; i += 500) await tx`insert into trc.sales_calls ${tx(rows.slice(i, i + 500))}`;
+  });
+  const missingPackageField = !records.some((r) => "package" in (r.properties ?? {}));
+  return { ok: true, detail: { records: rows.length, ...(missingPackageField ? { package: "no record has a package yet" } : {}) } };
+}
+
+// ---------------------------------------------------------------------------
 // Targets: GHL Custom Values named "KPI …" (see targets.ts). Replaced whole, so a target removed in GHL goes here too.
 // ---------------------------------------------------------------------------
 async function syncTargets(c: Ctx, creds: ghl.GhlCreds): Promise<Result> {
@@ -505,6 +526,7 @@ export async function runSync(trigger: "cron" | "hourly" | "manual", budgetMs = 
   await step("ghl_team", g, () => syncTeam(c, g!));
   await step("ghl_registrations", g, () => syncRegistrations(c, g!));
   await step("ghl_appointments", g, () => syncAppointments(c, g!));
+  await step("ghl_sales_calls", g, () => syncSalesCalls(c, g!));
   await step("kpi_targets", g, () => syncTargets(c, g!));
   await step("whop_payments", w, () => syncWhop(c, w!.key));
   await step("meta_ads", m, () => syncMeta(c, m!));

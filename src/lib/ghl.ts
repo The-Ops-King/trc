@@ -107,3 +107,28 @@ export async function listCustomValues(c: GhlCreds): Promise<Array<{ name: strin
     `${BASE}/locations/${encodeURIComponent(c.locationId)}/customValues`, { headers: headers(c) });
   return (r.customValues ?? []).map((v) => ({ name: v.name ?? "", value: String(v.value ?? "") }));
 }
+
+export type ObjectRecord = { id: string; properties: Record<string, unknown>; createdAt?: string; updatedAt?: string; searchAfter?: unknown[] };
+
+/**
+ * Every record of a custom object (GHL's record search, paged with searchAfter). Needs the PIT scope objects/record.readonly.
+ * Stops when a page comes back short; throws if GHL keeps returning pages past `max` records, so a loop never passes for data.
+ */
+export async function listObjectRecords(c: GhlCreds, schemaKey: string, max = 20_000): Promise<ObjectRecord[]> {
+  const out: ObjectRecord[] = [];
+  let searchAfter: unknown[] = [];
+  const pageLimit = 100;
+  for (;;) {
+    const r = await fetchJson<{ records?: ObjectRecord[]; total?: number }>(`${BASE}/objects/${encodeURIComponent(schemaKey)}/records/search`, {
+      method: "POST", headers: { ...headers(c), "Content-Type": "application/json" },
+      body: JSON.stringify({ locationId: c.locationId, page: 1, pageLimit, query: "", searchAfter }),
+    });
+    const batch = r.records ?? [];
+    out.push(...batch);
+    if (batch.length < pageLimit) return out;
+    const last = batch[batch.length - 1]!;
+    if (!last.searchAfter?.length) throw new Error(`GHL record search for ${schemaKey} gave a full page with no searchAfter`);
+    searchAfter = last.searchAfter;
+    if (out.length > max) throw new Error(`GHL record search for ${schemaKey} passed ${max} records; stopped`);
+  }
+}

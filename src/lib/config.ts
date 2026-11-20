@@ -70,3 +70,19 @@ export const PITCH_MINUTE = 45;
 
 /** Display timezone for dates on the dashboard. */
 export const DISPLAY_TZ = "America/Los_Angeles";
+
+/**
+ * The sales tracker tab (Tyler, 2026-11-20). Its calls are the GHL "TRC Sales Call" records the engine writes, for the closers
+ * listed here only: Tiffany's calls may have a record but are left out of every number ("Tiffany's calls don't get a sales call
+ * record, or maybe they get a record, but are excluded from the rest"). `calendars` are the calendars Nick is on ("any calendar
+ * that Nick is on is a sales call"), written in rather than read from GHL's team list so that taking Nick off a calendar later does
+ * not take his past calls out of the numbers. A Sales Call whose appointment is on another calendar is listed on the data check.
+ */
+export const SALES_TRACKER = {
+  object: "custom_objects.trc_sales_call",
+  closers: ["nick"] as ReadonlyArray<string>,
+  calendars: [
+    { id: "7ZrKZZSaU9VvDxZ5X1h6", name: "Leap Welcome Calls" },
+    { id: "klCwMLcf8vWsWTMOJyL6", name: "Leap Welcome Call - Nick" },
+  ] as ReadonlyArray<{ id: string; name: string }>,
+} as const;

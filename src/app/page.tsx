@@ -9,6 +9,7 @@ import { GROUP_LABEL, TYPE_LABEL, dateTime, div, num, pct, sessionLabel, usd } f
 import { laWallTimeToUtc } from "@/lib/session";
 import { CALL_HOSTS } from "@/lib/config";
 import { Card, DailyChart, Delta, Info, Section } from "./ui";
+import { Tabs } from "./tabs";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -259,6 +260,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
               <form method="post" action="/api/logout"><button type="submit">Log out</button></form>
             </div>
           </div>
+          <Tabs active="webinar" />
           <div className="bar-filters">
             <nav className="seg" aria-label="Date range">
               {RANGES.map((r) => <a key={r} href={link({ days: r })} className={!custom && r === days ? "active" : ""}>{rangeName(r)}</a>)}
