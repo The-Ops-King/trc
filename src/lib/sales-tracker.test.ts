@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { bookingsWithoutRecord, cashMismatches, classify, numbers, salesCallRow, trackerPayments, type Appt, type Person } from "./sales-tracker.ts";
+import { bookingsWithoutRecord, cashMismatches, classify, numbers, packageFromProducts, packageKey, salesCallRow, trackerPayments, type Appt, type Person } from "./sales-tracker.ts";
+import { SALES_TRACKER } from "./config.ts";
 
 // The live TRC Sales Call records on 2026-11-20 (names, notes and links taken out), Nick's and one of Tiffany's.
 const raw = JSON.parse(readFileSync(new URL("./fixtures/sales-calls-2026-11-20.json", import.meta.url), "utf8"));
@@ -90,4 +91,19 @@ test("sales tracker: Whop cash counts only paid payments on or after the person'
   assert.deepEqual(pays.map((p) => p.id), ["p1", "p2"]);
   assert.deepEqual(cashMismatches(calls, pays), []);
   assert.equal(cashMismatches(calls, pays.slice(0, 1)).length, 1);
+});
+
+test("sales tracker: a package written as its label is the same package as its key", () => {
+  assert.equal(packageKey("Ignite + 4M bundle"), "ignite_4m_bundle");
+  assert.equal(packageKey("ignite"), "ignite");
+  assert.equal(packageKey("Something else"), "Something else");
+  assert.equal(packageKey(null), null);
+});
+
+test("sales tracker: the package from Whop products, bundles before their parts; a custom amount says nothing", () => {
+  const r = SALES_TRACKER.packageFromProduct;
+  assert.equal(packageFromProducts(["**Ignite MLO Academy **"], r), "ignite");
+  assert.equal(packageFromProducts(["**Ignite MLO Academy + 4M Mastermind **"], r), "ignite_mlo_4m");
+  assert.equal(packageFromProducts(["Clarity Pay: 4M Mastermind + 6 Month Ignite Coaching"], r), "4m_6mo_ignite");
+  assert.equal(packageFromProducts(["9997 **"], r), null);
 });

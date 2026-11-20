@@ -181,7 +181,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
           )}
         </Section>
 
-        <Section title="Objections and packages">
+        <Section title="Objections and packages" intro="A close, deposit or close pending with no Package on its Sales Call takes the package its person's Whop products say, marked (from Whop) in the call log.">
           <div className="grid g2">
             <div className="table-wrap">
               <table>
@@ -237,7 +237,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
                   <td className="muted">{c.outcome ?? "blank"}</td>
                   <td>{c.disposition ? DISPOSITION_LABEL[c.disposition] ?? c.disposition : "—"}</td>
                   <td>{c.objection ? OBJECTION_LABEL[c.objection] ?? c.objection : "—"}</td>
-                  <td>{c.package ? PACKAGE_LABEL[c.package] ?? c.package : "—"}</td>
+                  <td>{c.package ? `${PACKAGE_LABEL[c.package] ?? c.package}${c.packageFrom === "whop" ? " (from Whop)" : ""}` : "—"}</td>
                   <td>{c.cash_collected === null ? "—" : usd(c.cash_collected)}</td>
                   <td>{c.zoom === null ? "—" : c.zoom ? "attended" : "absent"}</td>
                   <td style={{ whiteSpace: "normal", textAlign: "left", minWidth: 220 }} className="small">{c.flags.map((f) => FLAG_LABEL[f]).join("; ")}</td>

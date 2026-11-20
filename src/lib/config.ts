@@ -81,6 +81,14 @@ export const DISPLAY_TZ = "America/Los_Angeles";
 export const SALES_TRACKER = {
   object: "custom_objects.trc_sales_call",
   closers: ["nick"] as ReadonlyArray<string>,
+  /** Whop product name → Sales Call package key, read in order (the bundles before their parts); the engine's eod.package_from_product says the same. */
+  packageFromProduct: [
+    [/4M Mastermind \+ 6 Month Ignite/i, "4m_6mo_ignite"],
+    [/Ignite MLO Academy \+ 4M/i, "ignite_mlo_4m"],
+    [/ignite/i, "ignite"],
+    [/\b4M\b|mastermind/i, "4m"],
+    [/leap/i, "leap"],
+  ] as ReadonlyArray<readonly [RegExp, string]>,
   calendars: [
     { id: "7ZrKZZSaU9VvDxZ5X1h6", name: "Leap Welcome Calls" },
     { id: "klCwMLcf8vWsWTMOJyL6", name: "Leap Welcome Call - Nick" },

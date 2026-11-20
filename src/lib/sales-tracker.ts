@@ -29,6 +29,20 @@ export const PACKAGE_LABEL: Record<string, string> = {
   leap: "Leap", ignite: "Ignite", "4m": "4M", ignite_4m_bundle: "Ignite + 4M bundle",
   "4m_6mo_ignite": "4M Mastermind + 6 Month Ignite Coaching", ignite_mlo_4m: "Ignite MLO Academy + 4M Mastermind",
 };
+/** A package as GHL may hold it (its option key, or its label as an end-of-day answer writes it) as the option key; unknown stays as is. */
+export const packageKey = (v: string | null): string | null => {
+  if (!v) return null;
+  const t = v.trim().toLowerCase();
+  return Object.keys(PACKAGE_LABEL).find((k) => k === t || PACKAGE_LABEL[k]!.toLowerCase() === t) ?? v.trim();
+};
+/**
+ * The package a person's Whop products say (Tyler, 2026-11-20: "we should be able to read which package from whop"), by rules read in
+ * order, bundles before their parts; the first that matches any product. Null when none does (a custom amount like "9997 **").
+ */
+export function packageFromProducts(products: string[], rules: ReadonlyArray<readonly [RegExp, string]>): string | null {
+  return rules.find(([re]) => products.some((p) => re.test(p)))?.[1] ?? null;
+}
+
 /** Dispositions that mean an offer was made, when the Pitched field is blank. */
 const OFFER_DISPOSITIONS = new Set(["closed_won", "deposit", "close_pending", "follow_up", "lost", "financing_denied"]);
 const NO_OFFER_DISPOSITIONS = new Set(["dq", "no_offer"]);
@@ -63,7 +77,7 @@ export function salesCallRow(r: ObjectRecord): SalesCallRow {
     id: r.id, external_id: ext, appointment_id: ext.split("@")[0]!, contact_id: text(p.contact_id),
     slot_at: date(p.scheduled_at), closer: text(p.closer)?.toLowerCase() ?? null,
     outcome: text(p.outcome), disposition: text(p.disposition), objection: text(p.objection_primary), call_type: text(p.call_type),
-    package: text(p.package), pitched: text(p.pitched)?.toLowerCase() ?? null,
+    package: packageKey(text(p.package)), pitched: text(p.pitched)?.toLowerCase() ?? null,
     cash_collected: money(p.cash_collected), contract_value: money(p.contract_value), payment_terms: text(p.payment_terms),
     recording_url: text(p.recording_url), duration_min: money(p.duration_min), next_step_date: text(p.next_step_date)?.slice(0, 10) ?? null,
     created_at: date(r.createdAt), updated_at: date(r.updatedAt),
@@ -89,6 +103,7 @@ export type Flag =
   | "no_appointment";         // the appointment is not in the synced calendars (deleted, or a test/team booking)
 
 export type Call = SalesCallRow & {
+  packageFrom?: "sales_call" | "whop";   // where the package came from: the Sales Call, else the person's Whop products
   status: Status; flags: Flag[]; followUp: boolean; offer: boolean | null; zoom: boolean | null; person: Person | null;
 };
 

@@ -3,7 +3,7 @@ import "server-only";
 import { db, serial } from "./db";
 import { CALL_HOSTS, SALES_TRACKER } from "./config";
 import { isTestOrTeam } from "./people";
-import { classify, bookingsWithoutRecord, trackerPayments, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
+import { classify, bookingsWithoutRecord, trackerPayments, packageFromProducts, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
 
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
@@ -45,6 +45,15 @@ async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSour
     select id, email_key as email, paid_at, net_usd, product_title, method from trc.paid_payments where email_key in ${sql(emails)}` : [];
   const payments: WhopPayment[] = payRows.map((p) => ({ ...p, net_usd: Number(p.net_usd) }));
   const pays = trackerPayments(calls, payments, o.dayStart);
+  // a close, deposit or pending with no package on its Sales Call takes the one its person's Whop products say, marked as from Whop
+  const products = new Map<string, string[]>();
+  for (const p of pays) if (p.product_title) products.set(p.contact_id, [...(products.get(p.contact_id) ?? []), p.product_title]);
+  for (const c of calls) {
+    if (c.package) { c.packageFrom = "sales_call"; continue; }
+    if (!["closed_won", "deposit", "close_pending"].includes(c.disposition ?? "") || !c.contact_id) continue;
+    const fromWhop = packageFromProducts(products.get(c.contact_id) ?? [], SALES_TRACKER.packageFromProduct);
+    if (fromWhop) { c.package = fromWhop; c.packageFrom = "whop"; }
+  }
 
   const hostIds = CALL_HOSTS.filter((h) => SALES_TRACKER.closers.includes(h.key)).map((h) => h.ghlUserId);
   const firstSlot = calls.reduce<Date | null>((m, c) => (!m || c.slot_at! < m ? c.slot_at : m), null);
