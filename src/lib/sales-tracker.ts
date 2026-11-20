@@ -94,6 +94,11 @@ const BOT = /notetaker|note taker|fathom|otter|fireflies|read\.ai|tl;dv|tldv|rec
 /** Whether one Zoom attendee was a prospect: not the team (by email or the internal rule), not a note-taker bot. */
 export const isProspect = (a: { name: string | null; email: string | null }, isTeam: (email: string | null, name: string | null) => boolean) =>
   !BOT.test(a.name ?? "") && !BOT.test(a.email ?? "") && !isTeam(a.email, a.name);
+/**
+ * A prospect in the meeting long enough for it to be the call: 5 minutes (the engine's rule for a phone call, D308). Anthony Monreal
+ * joined for 2 minutes on Nov 20 and was rebooked: that is not a held call.
+ */
+export const HELD_MINUTES = 5;
 export type Person = { contact_id: string; name: string | null; email: string | null };
 
 export type Basis = "evidence" | "filed";

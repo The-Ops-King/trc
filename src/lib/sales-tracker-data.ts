@@ -3,7 +3,7 @@ import "server-only";
 import { db, serial } from "./db";
 import { CALL_HOSTS, SALES_TRACKER } from "./config";
 import { isTestOrTeam } from "./people";
-import { classify, bookingRows, bookingsWithoutRecord, trackerPayments, packageFromProducts, isProspect, zoomWithoutRecord, type ZoomSeen, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
+import { classify, bookingRows, bookingsWithoutRecord, trackerPayments, packageFromProducts, isProspect, HELD_MINUTES, zoomWithoutRecord, type ZoomSeen, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
 
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
@@ -40,12 +40,18 @@ async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSour
   const appts = new Map(apptRows.map((a) => [a.id, a]));
   const apptIds: string[] = apptRows.map((a) => a.id);
   // every Zoom meeting seen for these bookings, with whether a prospect was in it (the team and note-taker bots are not)
-  const zoomRows = await sql<Array<{ appointment_id: string; start_at: Date; who: Array<{ name: string | null; email: string | null }> | null }>>`
-    select zi.appointment_id, zi.start_at, json_agg(json_build_object('name', za.name, 'email', za.email)) filter (where za.person_key is not null) as who
+  const zoomRows = await sql<Array<{ appointment_id: string; start_at: Date; who: Array<{ name: string | null; email: string | null; minutes: number | string | null }> | null }>>`
+    select zi.appointment_id, zi.start_at, json_agg(json_build_object('name', za.name, 'email', za.email, 'minutes', za.minutes)) filter (where za.person_key is not null) as who
     from trc.zoom_instances zi left join trc.zoom_attendees za on za.instance_uuid = zi.uuid
     where zi.kind = 'onboarding' and zi.appointment_id in ${sql(apptIds.length ? apptIds : [""])}
     group by zi.uuid, zi.appointment_id, zi.start_at`;
-  const zoomSeen: ZoomSeen[] = zoomRows.map((z) => ({ appointment_id: z.appointment_id, start_at: z.start_at, prospect: (z.who ?? []).some((w) => isProspect(w, (e, n) => isTestOrTeam(e, n, teamSet))) }));
+  // a prospect there 5 minutes or more: the call happened; only the team or a bot: nobody came; a prospect there briefly (joined to
+  // rebook, Anthony Monreal on Nov 20): Zoom says nothing either way, so the meeting is left out
+  const zoomSeen: ZoomSeen[] = zoomRows.flatMap((z) => {
+    const prospects = (z.who ?? []).filter((w) => isProspect(w, (e, n) => isTestOrTeam(e, n, teamSet)));
+    const held = prospects.some((w) => Number(w.minutes ?? 0) >= HELD_MINUTES);
+    return !held && prospects.length ? [] : [{ appointment_id: z.appointment_id, start_at: z.start_at, prospect: held }];
+  });
   // "Bookings with no Sales Call: count": the closer's bookings the engine never made a Sales Call for, as calls (flagged)
   const hostIdsFor = CALL_HOSTS.filter((h) => SALES_TRACKER.closers.includes(h.key));
   const extra = o.bookings ? hostIdsFor.flatMap((h) => bookingRows(apptRows, rows, { calendars: calendarIds, hostIds: [h.ghlUserId], closer: h.key }))
