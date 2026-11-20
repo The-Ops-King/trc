@@ -3,16 +3,16 @@ import "server-only";
 import { db, serial } from "./db";
 import { CALL_HOSTS, SALES_TRACKER } from "./config";
 import { isTestOrTeam } from "./people";
-import { classify, bookingsWithoutRecord, trackerPayments, packageFromProducts, isProspect, zoomWithoutRecord, type ZoomSeen, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
+import { classify, bookingRows, bookingsWithoutRecord, trackerPayments, packageFromProducts, isProspect, zoomWithoutRecord, type ZoomSeen, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
 
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
 /** Through serial (db.ts), like the webinar page: it shares the one connection with every other request on this server. */
-export function loadSalesTracker(o: { now: Date; basis: Basis; shows: ShowSource; dayStart: (d: Date) => Date }) {
+export function loadSalesTracker(o: { now: Date; basis: Basis; shows: ShowSource; bookings: boolean; dayStart: (d: Date) => Date }) {
   return serial(() => loadSalesTrackerNow(o));
 }
 
-async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSource; dayStart: (d: Date) => Date }) {
+async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSource; bookings: boolean; dayStart: (d: Date) => Date }) {
   const sql = db();
   const calendarIds = SALES_TRACKER.calendars.map((k) => k.id);
   // One query at a time on the one connection (db.ts): queries sent together on it make the pooler stop answering (2026-11-20:
@@ -46,7 +46,11 @@ async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSour
     where zi.kind = 'onboarding' and zi.appointment_id in ${sql(apptIds.length ? apptIds : [""])}
     group by zi.uuid, zi.appointment_id, zi.start_at`;
   const zoomSeen: ZoomSeen[] = zoomRows.map((z) => ({ appointment_id: z.appointment_id, start_at: z.start_at, prospect: (z.who ?? []).some((w) => isProspect(w, (e, n) => isTestOrTeam(e, n, teamSet))) }));
-  const calls = classify(prospects, appts, people, { now: o.now, closers: SALES_TRACKER.closers, calendars: calendarIds, basis: o.basis, shows: o.shows, zoomSeen });
+  // "Bookings with no Sales Call: count": the closer's bookings the engine never made a Sales Call for, as calls (flagged)
+  const hostIdsFor = CALL_HOSTS.filter((h) => SALES_TRACKER.closers.includes(h.key));
+  const extra = o.bookings ? hostIdsFor.flatMap((h) => bookingRows(apptRows, rows, { calendars: calendarIds, hostIds: [h.ghlUserId], closer: h.key }))
+    .filter((r) => { const p = r.contact_id ? people.get(r.contact_id) : null; return !p || !isTestOrTeam(p.email, p.name, teamSet); }) : [];
+  const calls = classify([...prospects, ...extra], appts, people, { now: o.now, closers: SALES_TRACKER.closers, calendars: calendarIds, basis: o.basis, shows: o.shows, zoomSeen });
 
   const emails = [...new Set(calls.flatMap((c) => (c.person?.email ? [c.person.email.toLowerCase()] : [])))];
   const payRows = emails.length ? await sql<Array<{ id: string; email: string; paid_at: Date; net_usd: string; product_title: string | null; method: string | null }>>`

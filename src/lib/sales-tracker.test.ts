@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { bookingsWithoutRecord, cashMismatches, classify, isProspect, numbers, packageFromProducts, packageKey, salesCallRow, trackerPayments, zoomWithoutRecord, type Appt, type Person, type ZoomSeen } from "./sales-tracker.ts";
+import { bookingRows, bookingsWithoutRecord, cashMismatches, classify, isProspect, numbers, packageFromProducts, packageKey, salesCallRow, trackerPayments, zoomWithoutRecord, type Appt, type Person, type ZoomSeen } from "./sales-tracker.ts";
 import { SALES_TRACKER } from "./config.ts";
 
 // The live TRC Sales Call records on 2026-11-20 (names, notes and links taken out), Nick's and one of Tiffany's.
@@ -126,4 +126,21 @@ test("sales tracker: the package from Whop products, bundles before their parts;
   assert.equal(packageFromProducts(["**Ignite MLO Academy + 4M Mastermind **"], r), "ignite_mlo_4m");
   assert.equal(packageFromProducts(["Clarity Pay: 4M Mastermind + 6 Month Ignite Coaching"], r), "4m_6mo_ignite");
   assert.equal(packageFromProducts(["9997 **"], r), null);
+});
+
+test("sales tracker: bookings with no Sales Call count only with the toggle; a cancel is a cancel (Jonathan Maher, Nov 13)", () => {
+  const ap: Appt[] = [
+    { id: "qNj9d3Q3DPcPlQZQaCGG", contact_id: "usEBFM9knMWxQuh6xjGV", calendar_id: CAL[0]!, start_at: new Date("2026-11-13T17:00:00Z"), host_user_id: "nick-id", appointment_status: "cancelled" },
+    { id: "f8KR5gg7EiyJYFkHjCB5", calendar_id: CAL[0]!, start_at: new Date("2026-11-16T19:00:00Z"), host_user_id: "nick-id", appointment_status: "confirmed" },   // has a Sales Call
+    { id: "tiff", calendar_id: CAL[0]!, start_at: new Date("2026-11-13T18:00:00Z"), host_user_id: "tiff-id", appointment_status: "confirmed" },
+  ];
+  const extra = bookingRows(ap, rows, { calendars: CAL, hostIds: ["nick-id"], closer: "nick" });
+  assert.deepEqual(extra.map((r) => [r.appointment_id, r.outcome]), [["qNj9d3Q3DPcPlQZQaCGG", "cancelled"]]);
+  const week = [new Date("2026-11-10T08:00:00Z"), new Date("2026-11-17T08:00:00Z")] as const;
+  const off = numbers(run(), week[0], week[1]), on = numbers(classify([...rows, ...extra], appts, none, { now: NOW, closers: ["nick"], calendars: CAL, basis: "evidence", shows: "salescall" }), week[0], week[1]);
+  assert.equal(on.cancelled, off.cancelled + 1);
+  assert.equal(on.onCalendar, off.onCalendar + 1);
+  const jon = classify([...rows, ...extra], appts, none, { now: NOW, closers: ["nick"], calendars: CAL, basis: "evidence", shows: "salescall" }).find((c) => c.appointment_id === "qNj9d3Q3DPcPlQZQaCGG")!;
+  assert.equal(jon.status, "cancelled");
+  assert.ok(jon.flags.includes("no_sales_call"));
 });
