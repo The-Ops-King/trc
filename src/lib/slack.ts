@@ -11,11 +11,10 @@ export async function postDailyReport(syncOk: boolean) {
   const dayAgo = new Date(now.getTime() - 86_400_000);
   const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
 
-  const [day, week, sessions] = await Promise.all([
-    periodTotals(dayAgo, now),
-    periodTotals(weekAgo, now),
-    sessionMetrics(new Date(now.getTime() - 30 * 86_400_000), now),
-  ]);
+  // one after another: the one connection hangs on queries sent together (db.ts)
+  const day = await periodTotals(dayAgo, now);
+  const week = await periodTotals(weekAgo, now);
+  const sessions = await sessionMetrics(new Date(now.getTime() - 30 * 86_400_000), now);
   const last = sessions[0];
 
   const lines = (t: typeof day) => [

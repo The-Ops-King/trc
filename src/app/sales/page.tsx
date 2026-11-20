@@ -13,6 +13,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const DAY = 86_400_000;
+/** Give up well before Vercel's 60s limit, so a stalled database shows a message instead of a timeout page (as the webinar tab does). */
+const PAGE_DEADLINE_MS = 25_000;
 const TZ = "America/Los_Angeles";
 const laYmd = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 const startOfLaDay = (ymd: string) => { const [y, m, d] = ymd.split("-").map(Number) as [number, number, number]; return laWallTimeToUtc(y, m - 1, d, 0, 0); };
@@ -64,7 +66,10 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
 
   let data;
   try {
-    data = await loadSalesTracker({ now, basis, shows, dayStart: (d) => startOfLaDay(laYmd(d)) });
+    data = await Promise.race([
+      loadSalesTracker({ now, basis, shows, dayStart: (d) => startOfLaDay(laYmd(d)) }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`no answer within ${PAGE_DEADLINE_MS / 1000}s`)), PAGE_DEADLINE_MS)),
+    ]);
   } catch (err) {
     console.error(`[sales] page data failed: ${err instanceof Error ? err.message : String(err)}`);
     return <main><Tabs active="sales" /><div className="notice err"><b>The sales tracker couldn&apos;t load.</b> The cause is in the Vercel logs under &quot;[sales]&quot;.</div></main>;
