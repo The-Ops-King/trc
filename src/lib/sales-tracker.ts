@@ -24,6 +24,11 @@ export const DISPOSITION_LABEL: Record<string, string> = {
 export const OBJECTION_LABEL: Record<string, string> = {
   price: "Price", partner: "Partner / spouse", timing: "Timing", fear: "Fear", competitor: "Competitor", think_about_it: "Think about it",
 };
+/** The Sales Call's Package options (field added 2026-11-20). An unknown key shows as itself. */
+export const PACKAGE_LABEL: Record<string, string> = {
+  leap: "Leap", ignite: "Ignite", "4m": "4M", ignite_4m_bundle: "Ignite + 4M bundle",
+  "4m_6mo_ignite": "4M Mastermind + 6 Month Ignite Coaching", ignite_mlo_4m: "Ignite MLO Academy + 4M Mastermind",
+};
 /** Dispositions that mean an offer was made, when the Pitched field is blank. */
 const OFFER_DISPOSITIONS = new Set(["closed_won", "deposit", "close_pending", "follow_up", "lost", "financing_denied"]);
 const NO_OFFER_DISPOSITIONS = new Set(["dq", "no_offer"]);

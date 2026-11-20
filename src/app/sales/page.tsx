@@ -5,7 +5,7 @@ import { laWallTimeToUtc } from "@/lib/session";
 import { dateTime, usd } from "@/lib/format";
 import { SALES_TRACKER } from "@/lib/config";
 import { loadSalesTracker } from "@/lib/sales-tracker-data";
-import { cashMismatches, numbers, DISPOSITION_LABEL, OBJECTION_LABEL, OBJECTIONS, type Basis, type Call, type Flag, type ShowSource } from "@/lib/sales-tracker";
+import { cashMismatches, numbers, DISPOSITION_LABEL, OBJECTION_LABEL, OBJECTIONS, PACKAGE_LABEL, type Basis, type Call, type Flag, type ShowSource } from "@/lib/sales-tracker";
 import { Card, Section } from "../ui";
 import { Tabs } from "../tabs";
 
@@ -191,7 +191,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
               <table>
                 <thead><tr><th>Package (closes, deposits, pending)</th><th>Calls</th></tr></thead>
                 <tbody>
-                  {pkg.length ? pkg.map(([k, v]) => <tr key={k}><td className={k ? "" : "muted"}>{k || "Not recorded"}</td><td>{v}</td></tr>) : <tr><td className="muted">None this period</td><td>0</td></tr>}
+                  {pkg.length ? pkg.map(([k, v]) => <tr key={k}><td className={k ? "" : "muted"}>{k ? PACKAGE_LABEL[k] ?? k : "Not recorded"}</td><td>{v}</td></tr>) : <tr><td className="muted">None this period</td><td>0</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -232,7 +232,7 @@ export default async function SalesTracker({ searchParams }: { searchParams: Pro
                   <td className="muted">{c.outcome ?? "blank"}</td>
                   <td>{c.disposition ? DISPOSITION_LABEL[c.disposition] ?? c.disposition : "—"}</td>
                   <td>{c.objection ? OBJECTION_LABEL[c.objection] ?? c.objection : "—"}</td>
-                  <td>{c.package ?? "—"}</td>
+                  <td>{c.package ? PACKAGE_LABEL[c.package] ?? c.package : "—"}</td>
                   <td>{c.cash_collected === null ? "—" : usd(c.cash_collected)}</td>
                   <td>{c.zoom === null ? "—" : c.zoom ? "attended" : "absent"}</td>
                   <td style={{ whiteSpace: "normal", textAlign: "left", minWidth: 220 }} className="small">{c.flags.map((f) => FLAG_LABEL[f]).join("; ")}</td>
