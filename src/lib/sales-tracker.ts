@@ -84,7 +84,16 @@ export function salesCallRow(r: ObjectRecord): SalesCallRow {
   };
 }
 
-export type Appt = { id: string; contact_id?: string | null; calendar_id: string; start_at: Date; host_user_id: string | null; zoom_attended: boolean | null; appointment_status: string | null };
+export type Appt = { id: string; contact_id?: string | null; calendar_id: string; start_at: Date; host_user_id: string | null; appointment_status: string | null };
+/**
+ * One Zoom meeting the dashboard saw for a booking (trc.zoom_instances, matched by the booking's meeting link), when it started and
+ * whether a prospect was in it: anyone but the team and note-taker bots ("Nick's Fathom Notetaker" is not a person on the call).
+ */
+export type ZoomSeen = { appointment_id: string; start_at: Date; prospect: boolean };
+const BOT = /notetaker|note taker|fathom|otter|fireflies|read\.ai|tl;dv|tldv|recorder|\bbot\b/i;
+/** Whether one Zoom attendee was a prospect: not the team (by email or the internal rule), not a note-taker bot. */
+export const isProspect = (a: { name: string | null; email: string | null }, isTeam: (email: string | null, name: string | null) => boolean) =>
+  !BOT.test(a.name ?? "") && !BOT.test(a.email ?? "") && !isTeam(a.email, a.name);
 export type Person = { contact_id: string; name: string | null; email: string | null };
 
 export type Basis = "evidence" | "filed";
@@ -98,7 +107,7 @@ export type Flag =
   | "close_no_cash"           // closed won / deposit with no Cash Collected
   | "follow_up_no_date"       // disposition follow-up with no Next Step Date
   | "offer_unknown"           // showed, Pitched blank and the disposition does not say
-  | "zoom_disagrees"          // Zoom attendance says the other thing
+  | "zoom_disagrees"          // Zoom says the other thing (a prospect joined a call marked otherwise, or none joined one marked showed)
   | "off_calendar"            // the appointment is not on a tracker calendar
   | "no_appointment";         // the appointment is not in the synced calendars (deleted, or a test/team booking)
 
@@ -117,13 +126,19 @@ const hasEvidence = (r: SalesCallRow) =>
  */
 export function classify(
   rows: SalesCallRow[], appts: Map<string, Appt>, people: Map<string, Person>,
-  o: { now: Date; closers: ReadonlyArray<string>; calendars: ReadonlyArray<string>; basis: Basis; shows: ShowSource },
+  o: { now: Date; closers: ReadonlyArray<string>; calendars: ReadonlyArray<string>; basis: Basis; shows: ShowSource; zoomSeen?: ZoomSeen[] },
 ): Call[] {
+  const zoomOf = (r: SalesCallRow): boolean | null => {
+    const near = (o.zoomSeen ?? []).filter((z) => z.appointment_id === r.appointment_id && Math.abs(z.start_at.getTime() - r.slot_at!.getTime()) <= MATCH_MS);
+    return near.length ? near.some((z) => z.prospect) : null;
+  };
   const mine = rows.filter((r) => r.closer && o.closers.includes(r.closer) && r.slot_at);
   const out: Call[] = mine.map((r) => {
     const flags: Flag[] = [];
     const past = r.slot_at!.getTime() <= o.now.getTime();
-    const ev = hasEvidence(r);
+    // Zoom, per slot: the meeting that started within an hour of this slot's time, never another slot's (a moved booking keeps its link)
+    const zoom = past ? zoomOf(r) : null;
+    const ev = hasEvidence(r) || zoom === true;
     let status: Status;
     switch (r.outcome) {
       case "showed": status = "showed"; break;
@@ -138,14 +153,14 @@ export function classify(
         else if (ev && o.basis === "evidence") { status = "showed"; flags.push("outcome_not_filed"); }
         else { status = "not_filed"; flags.push("not_filed"); }
     }
-    // Zoom: only for the slot the appointment is at now (a moved appointment's Zoom match is for its new time).
     const a = appts.get(r.appointment_id);
-    const sameSlot = a && Math.abs(a.start_at.getTime() - r.slot_at!.getTime()) <= MATCH_MS;
-    const zoom = sameSlot ? a.zoom_attended : null;
-    if (zoom !== null && (status === "showed" || status === "no_show") && (status === "showed") !== zoom) flags.push("zoom_disagrees");
-    if (o.shows === "zoom" && zoom !== null && (status === "showed" || status === "no_show" || status === "not_filed")) {
+    // what GHL says against what Zoom saw: a prospect joined a call filed as a no-show or a reschedule, or none joined one filed as showed
+    const filedShow = r.outcome === "showed", filedOther = r.outcome === "no_show" || r.outcome === "rescheduled";
+    if (zoom !== null && ((filedShow && !zoom) || (filedOther && zoom))) flags.push("zoom_disagrees");
+    if (o.shows === "zoom" && zoom !== null && (status === "showed" || status === "no_show" || status === "not_filed" || status === "moved")) {
       if (status === "not_filed") flags.splice(flags.indexOf("not_filed"), 1);
-      status = zoom ? "showed" : "no_show";
+      if (status === "moved" && zoom && !flags.includes("moved_after_call")) flags.push("moved_after_call");
+      status = zoom ? "showed" : status === "moved" ? "moved" : "no_show";
     }
     if (!a) flags.push("no_appointment");
     else if (!o.calendars.includes(a.calendar_id)) flags.push("off_calendar");
@@ -168,6 +183,15 @@ export function classify(
     c.followUp = c.call_type === "follow_up" || earlier;
   }
   return out.sort((a, b) => a.slot_at!.getTime() - b.slot_at!.getTime());
+}
+
+/** Zoom meetings on a tracker booking where a prospect joined and no Sales Call covers that time (a call nobody logged): the data check lists them. */
+export function zoomWithoutRecord(zoomSeen: ZoomSeen[], rows: SalesCallRow[], appts: Map<string, Appt>, o: { calendars: ReadonlyArray<string>; hostIds: ReadonlyArray<string> }): ZoomSeen[] {
+  return zoomSeen.filter((z) => {
+    const a = appts.get(z.appointment_id);
+    if (!z.prospect || !a || !o.calendars.includes(a.calendar_id) || !a.host_user_id || !o.hostIds.includes(a.host_user_id)) return false;
+    return !rows.some((r) => r.appointment_id === z.appointment_id && r.slot_at && Math.abs(r.slot_at.getTime() - z.start_at.getTime()) <= MATCH_MS);
+  });
 }
 
 /** Booked on a tracker calendar with a tracker closer as host, in the past, and the engine never made a Sales Call for it. */

@@ -3,7 +3,7 @@ import "server-only";
 import { db, serial } from "./db";
 import { CALL_HOSTS, SALES_TRACKER } from "./config";
 import { isTestOrTeam } from "./people";
-import { classify, bookingsWithoutRecord, trackerPayments, packageFromProducts, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
+import { classify, bookingsWithoutRecord, trackerPayments, packageFromProducts, isProspect, zoomWithoutRecord, type ZoomSeen, type Appt, type Basis, type Person, type SalesCallRow, type ShowSource, type WhopPayment } from "./sales-tracker";
 
 const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
@@ -23,7 +23,7 @@ async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSour
              created_at, updated_at
       from trc.sales_calls where closer in ${sql(SALES_TRACKER.closers as string[])}`;
   const apptRows = await sql<Appt[]>`
-      select a.id, a.contact_id, a.calendar_id, a.start_at, a.host_user_id, a.zoom_attended, a.appointment_status from trc.appointments a
+      select a.id, a.contact_id, a.calendar_id, a.start_at, a.host_user_id, a.appointment_status from trc.appointments a
       where a.calendar_id in ${sql(calendarIds)} or a.id in (select appointment_id from trc.sales_calls)`;
   const contactRows = await sql<Array<{ contact_id: string; full_name: string | null; email: string | null }>>`
       select g.contact_id, g.full_name, g.email from trc.ghl_contacts g where g.contact_id in (select contact_id from trc.sales_calls where contact_id is not null)
@@ -38,7 +38,15 @@ async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSour
   // Test and team bookings are never prospects, the same rule as the rest of the dashboard.
   const prospects = rows.filter((r) => { const p = r.contact_id ? people.get(r.contact_id) : null; return !p || !isTestOrTeam(p.email, p.name, teamSet); });
   const appts = new Map(apptRows.map((a) => [a.id, a]));
-  const calls = classify(prospects, appts, people, { now: o.now, closers: SALES_TRACKER.closers, calendars: calendarIds, basis: o.basis, shows: o.shows });
+  const apptIds: string[] = apptRows.map((a) => a.id);
+  // every Zoom meeting seen for these bookings, with whether a prospect was in it (the team and note-taker bots are not)
+  const zoomRows = await sql<Array<{ appointment_id: string; start_at: Date; who: Array<{ name: string | null; email: string | null }> | null }>>`
+    select zi.appointment_id, zi.start_at, json_agg(json_build_object('name', za.name, 'email', za.email)) filter (where za.person_key is not null) as who
+    from trc.zoom_instances zi left join trc.zoom_attendees za on za.instance_uuid = zi.uuid
+    where zi.kind = 'onboarding' and zi.appointment_id in ${sql(apptIds.length ? apptIds : [""])}
+    group by zi.uuid, zi.appointment_id, zi.start_at`;
+  const zoomSeen: ZoomSeen[] = zoomRows.map((z) => ({ appointment_id: z.appointment_id, start_at: z.start_at, prospect: (z.who ?? []).some((w) => isProspect(w, (e, n) => isTestOrTeam(e, n, teamSet))) }));
+  const calls = classify(prospects, appts, people, { now: o.now, closers: SALES_TRACKER.closers, calendars: calendarIds, basis: o.basis, shows: o.shows, zoomSeen });
 
   const emails = [...new Set(calls.flatMap((c) => (c.person?.email ? [c.person.email.toLowerCase()] : [])))];
   const payRows = emails.length ? await sql<Array<{ id: string; email: string; paid_at: Date; net_usd: string; product_title: string | null; method: string | null }>>`
@@ -58,6 +66,7 @@ async function loadSalesTrackerNow(o: { now: Date; basis: Basis; shows: ShowSour
   const hostIds = CALL_HOSTS.filter((h) => SALES_TRACKER.closers.includes(h.key)).map((h) => h.ghlUserId);
   const firstSlot = calls.reduce<Date | null>((m, c) => (!m || c.slot_at! < m ? c.slot_at : m), null);
   const missing = firstSlot ? bookingsWithoutRecord(apptRows, rows, { now: o.now, calendars: calendarIds, hostIds, since: firstSlot }) : [];
+  const zoomNoRecord = zoomWithoutRecord(zoomSeen, rows, appts, { calendars: calendarIds, hostIds });
   const step = sync[0]?.detail?.ghl_sales_calls ?? null;
-  return { calls, pays, missing, people, step, lastOk: lastOk[0]?.at ?? null, recordCount: rows.length };
+  return { calls, pays, missing, zoomNoRecord, people, step, lastOk: lastOk[0]?.at ?? null, recordCount: rows.length };
 }

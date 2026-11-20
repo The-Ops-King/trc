@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { bookingsWithoutRecord, cashMismatches, classify, numbers, packageFromProducts, packageKey, salesCallRow, trackerPayments, type Appt, type Person } from "./sales-tracker.ts";
+import { bookingsWithoutRecord, cashMismatches, classify, isProspect, numbers, packageFromProducts, packageKey, salesCallRow, trackerPayments, zoomWithoutRecord, type Appt, type Person, type ZoomSeen } from "./sales-tracker.ts";
 import { SALES_TRACKER } from "./config.ts";
 
 // The live TRC Sales Call records on 2026-11-20 (names, notes and links taken out), Nick's and one of Tiffany's.
@@ -53,28 +53,48 @@ test("sales tracker: a rescheduled slot with a recording is a call that happened
   assert.ok(julie[0]!.flags.includes("moved_after_call"));
 });
 
-test("sales tracker: Zoom decides shows only for the slot the appointment is at now, and a disagreement is flagged", () => {
-  const a = new Map<string, Appt>([
-    ["f8KR5gg7EiyJYFkHjCB5", { id: "f8KR5gg7EiyJYFkHjCB5", calendar_id: CAL[0]!, start_at: new Date("2026-11-16T19:00:00Z"), host_user_id: "n", zoom_attended: true, appointment_status: "confirmed" }],
-    ["H17kdNZcYJFV7HJiQjgp", { id: "H17kdNZcYJFV7HJiQjgp", calendar_id: CAL[1]!, start_at: new Date("2026-11-19T19:00:00Z"), host_user_id: "n", zoom_attended: false, appointment_status: "confirmed" }],
-    ["pkeC7HVL2O7tMd7s434b", { id: "pkeC7HVL2O7tMd7s434b", calendar_id: CAL[0]!, start_at: new Date("2026-11-17T18:00:00Z"), host_user_id: "n", zoom_attended: true, appointment_status: "confirmed" }],
-  ]);
+test("sales tracker: Zoom is read per slot from the meetings themselves (the live Zoom data of 2026-11-20)", () => {
+  // what the dashboard's Zoom feed saw on Nick's bookings, a prospect in each (Razia on Nov 13 too, before any Sales Call existed)
+  const z = (id: string, at: string, prospect = true): ZoomSeen => ({ appointment_id: id, start_at: new Date(at), prospect });
+  const zoomSeen = [z("pkeC7HVL2O7tMd7s434b", "2026-11-13T17:59:16Z"), z("f8KR5gg7EiyJYFkHjCB5", "2026-11-16T19:00:13Z"), z("pkeC7HVL2O7tMd7s434b", "2026-11-16T20:00:07Z"),
+    z("pkeC7HVL2O7tMd7s434b", "2026-11-17T18:00:25Z"), z("FaKyg2ziENmzdPTuLeRY", "2026-11-17T20:00:21Z"), z("MrwrS4MBf1vjGfkOAdDX", "2026-11-19T20:58:46Z")];
   const byId = (calls: ReturnType<typeof run>, ext: string) => calls.find((c) => c.external_id === ext)!;
-  const sc = run({}, a);
-  assert.ok(byId(sc, "f8KR5gg7EiyJYFkHjCB5").flags.includes("zoom_disagrees"));
-  const z = run({ shows: "zoom" }, a);
-  assert.equal(byId(z, "f8KR5gg7EiyJYFkHjCB5").status, "showed");
-  assert.equal(byId(z, "H17kdNZcYJFV7HJiQjgp").status, "no_show");
-  assert.equal(byId(z, "pkeC7HVL2O7tMd7s434b").status, "moved");    // the old 10am slot: Zoom's match is for the 17th
-  assert.equal(byId(z, "pkeC7HVL2O7tMd7s434b@2026-11-17T18:00:00.000Z").zoom, true);
+  const ev = run({ zoomSeen });
+  // Alfred: filed a no-show, Zoom saw him: flagged
+  assert.ok(byId(ev, "f8KR5gg7EiyJYFkHjCB5").flags.includes("zoom_disagrees"));
+  // Razia's noon slot, marked rescheduled: she was on Zoom, so the call happened there
+  assert.equal(byId(ev, "pkeC7HVL2O7tMd7s434b@2026-11-16T20:00:00.000Z").status, "showed");
+  assert.ok(byId(ev, "pkeC7HVL2O7tMd7s434b@2026-11-16T20:00:00.000Z").flags.includes("moved_after_call"));
+  // her 10am slot two hours earlier is not that meeting's: still a reschedule
+  assert.equal(byId(ev, "pkeC7HVL2O7tMd7s434b").status, "moved");
+  // Pamela joined on the 17th; her booking moved to the 18th, where no meeting happened: the 18th is not a show
+  assert.equal(byId(ev, "FaKyg2ziENmzdPTuLeRY").status, "showed");
+  assert.equal(byId(ev, "FaKyg2ziENmzdPTuLeRY@2026-11-18T20:00:00.000Z").zoom, null);
+  assert.equal(byId(ev, "FaKyg2ziENmzdPTuLeRY@2026-11-18T20:00:00.000Z").status, "not_filed");
+  const zm = run({ zoomSeen, shows: "zoom" });
+  assert.equal(byId(zm, "f8KR5gg7EiyJYFkHjCB5").status, "showed");
+  assert.equal(byId(zm, "FaKyg2ziENmzdPTuLeRY@2026-11-18T20:00:00.000Z").status, "not_filed");
+  // only the team or a bot in the meeting: nobody came
+  const nobody = run({ zoomSeen: [z("H17kdNZcYJFV7HJiQjgp", "2026-11-19T19:01:00Z", false)], shows: "zoom" });
+  assert.equal(byId(nobody, "H17kdNZcYJFV7HJiQjgp").status, "no_show");
+  // Razia's Nov 13 call has no Sales Call: listed
+  const ap = new Map<string, Appt>([["pkeC7HVL2O7tMd7s434b", { id: "pkeC7HVL2O7tMd7s434b", calendar_id: CAL[0]!, start_at: new Date("2026-11-17T18:00:00Z"), host_user_id: "nick-id", appointment_status: "confirmed" }]]);
+  assert.deepEqual(zoomWithoutRecord(zoomSeen, rows, ap, { calendars: CAL, hostIds: ["nick-id"] }).map((x) => x.start_at.toISOString()), ["2026-11-13T17:59:16.000Z"]);
+});
+
+test("sales tracker: a note-taker bot and the team are not prospects on a Zoom call", () => {
+  const team = (e: string | null) => e === "nick@tiffanyrosecoaching.com";
+  assert.equal(isProspect({ name: "Nick's Fathom Notetaker", email: null }, team), false);
+  assert.equal(isProspect({ name: "Nick Rowe", email: "nick@tiffanyrosecoaching.com" }, team), false);
+  assert.equal(isProspect({ name: "Austin Seager", email: null }, team), true);
 });
 
 test("sales tracker: a booking with Nick as host and no Sales Call is listed", () => {
   const a: Appt[] = [
-    { id: "f8KR5gg7EiyJYFkHjCB5", calendar_id: CAL[0]!, start_at: new Date("2026-11-16T19:00:00Z"), host_user_id: "nick-id", zoom_attended: null, appointment_status: "confirmed" },
-    { id: "missing", calendar_id: CAL[0]!, start_at: new Date("2026-11-18T19:00:00Z"), host_user_id: "nick-id", zoom_attended: null, appointment_status: "confirmed" },
-    { id: "cancelled", calendar_id: CAL[0]!, start_at: new Date("2026-11-18T19:00:00Z"), host_user_id: "nick-id", zoom_attended: null, appointment_status: "cancelled" },
-    { id: "tiffany", calendar_id: CAL[0]!, start_at: new Date("2026-11-18T19:00:00Z"), host_user_id: "tiff-id", zoom_attended: null, appointment_status: "confirmed" },
+    { id: "f8KR5gg7EiyJYFkHjCB5", calendar_id: CAL[0]!, start_at: new Date("2026-11-16T19:00:00Z"), host_user_id: "nick-id", appointment_status: "confirmed" },
+    { id: "missing", calendar_id: CAL[0]!, start_at: new Date("2026-11-18T19:00:00Z"), host_user_id: "nick-id", appointment_status: "confirmed" },
+    { id: "cancelled", calendar_id: CAL[0]!, start_at: new Date("2026-11-18T19:00:00Z"), host_user_id: "nick-id", appointment_status: "cancelled" },
+    { id: "tiffany", calendar_id: CAL[0]!, start_at: new Date("2026-11-18T19:00:00Z"), host_user_id: "tiff-id", appointment_status: "confirmed" },
   ];
   assert.deepEqual(bookingsWithoutRecord(a, rows, { now: NOW, calendars: CAL, hostIds: ["nick-id"], since: new Date("2026-11-01") }).map((x) => x.id), ["missing"]);
 });
