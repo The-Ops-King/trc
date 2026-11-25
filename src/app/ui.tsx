@@ -23,8 +23,9 @@ export function Badge({ flag }: { flag: Judgement }) {
 }
 
 /**
- * Change against the previous period of the same length. Counts and dollars: % change. Rates: percentage points, since a %
- * change of a % is easy to misread. `better` says which way is good (green) for this number.
+ * Change against the previous period of the same length, as a % change for every number, rates included (Tyler, 2026-11-25:
+ * "instead of points up or down ... make it percent up or down"): a show rate of 20% then 25% reads +25.0%, with the earlier
+ * rate beside it. `better` says which way is good (green) for this number.
  */
 export function Delta({ cur, prev, kind, better = "up", label, money = false }: {
   cur: number | null; prev: number | null; kind: "count" | "rate"; better?: "up" | "down" | "neither"; label: string; money?: boolean;
@@ -39,8 +40,7 @@ export function Delta({ cur, prev, kind, better = "up", label, money = false }: 
   const good = (diff > 0) === (better === "up");
   const arrow = diff > 0 ? "▲" : "▼";
   let text: string;
-  if (kind === "rate") text = `${diff > 0 ? "+" : "−"}${Math.abs(diff * 100).toFixed(1)} pts`;
-  else if (prev === 0) text = "new";
+  if (prev === 0) text = "new";
   else text = `${diff > 0 ? "+" : "−"}${Math.abs((diff / prev) * 100).toFixed(1)}%`;
   return <div className={`delta ${better === "neither" ? "neutral" : good ? "good" : "bad"}`}>{arrow} {text} <span className="muted">· {label} ({was})</span></div>;
 }
