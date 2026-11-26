@@ -91,3 +91,29 @@ export async function adInfo(c: MetaCreds): Promise<MetaAdInfo[]> {
   const freq = new Map(week.map((w) => [w.ad_id, Number(w.frequency) || null]));
   return ads.map((a) => ({ adId: a.id, status: a.effective_status ?? null, thumbnail: a.creative?.thumbnail_url ?? null, frequency7d: freq.get(a.id) ?? null }));
 }
+
+/**
+ * The account's totals for [since, until] (YYYY-MM-DD, inclusive) as Ads Manager's total row shows them, every click and
+ * cost measure Meta has, side by side: what the dashboard's cards use (link clicks, outbound clicks) next to the ones Ads
+ * Manager offers as columns (CTR (all), unique outbound CTR, cost per landing page view...). For checking a card against Ads
+ * Manager; read only. Unique counts come from Meta for the whole range (they cannot be added up day by day).
+ */
+export async function accountTotals(c: MetaCreds, since: string, until: string): Promise<Record<string, unknown>> {
+  const rows = await pages<Record<string, unknown>>(
+    `https://graph.facebook.com/${c.apiVersion}/${c.adAccountId}/insights?` +
+      qs({
+        level: "account",
+        time_range: JSON.stringify({ since, until }),
+        fields: "spend,impressions,reach,frequency,clicks,ctr,cpc,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click,outbound_clicks,outbound_clicks_ctr,cost_per_outbound_click,unique_outbound_clicks,unique_outbound_clicks_ctr,unique_clicks,unique_ctr,actions,cost_per_action_type",
+      }),
+    c.token,
+  );
+  const r = rows[0] ?? {};
+  const pick = (k: string, t: string) => ((r[k] as Array<{ action_type: string; value: string }> | undefined) ?? []).find((a) => a.action_type === t)?.value ?? null;
+  const { actions: _a, cost_per_action_type: _c, ...rest } = r;
+  return {
+    ...rest,
+    landing_page_views: pick("actions", "landing_page_view"), cost_per_landing_page_view: pick("cost_per_action_type", "landing_page_view"),
+    leads: pick("actions", "lead"), cost_per_lead: pick("cost_per_action_type", "lead"),
+  };
+}
