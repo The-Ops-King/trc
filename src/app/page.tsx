@@ -55,7 +55,7 @@ function figures(t: PeriodTotals, f: PeriodFunnel, held: SessionRow[], ltv: LtvC
     cpc: rate(t.ad_spend, t.link_clicks),
     outCtr: rate(t.outbound_clicks, t.impressions),
     signups: t.registrants,
-    optIn: rate(pc.registrantsOnAdDays, clicks),
+    optIn: rate(pc.adRegistrantsOnAdDays, clicks),
     costPerReg: rate(t.ad_spend, t.registrants_on_ad_days),
     // webinar registrants (people, partials.ts) = partials (never booked a call) + booked a call
     registrants: pc.registrants,
@@ -206,7 +206,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   // targets → ok / miss / thin
   const f = {
     costPerContact: judge(cur.costPerContact, t.costPerRegistrantMax, pc.registrantsOnAdDays, minN, true),
-    optIn: judge(cur.optIn === null ? null : cur.optIn * 100, t.registrationRate, pc.registrantsOnAdDays, minN),
+    optIn: judge(cur.optIn === null ? null : cur.optIn * 100, t.registrationRate, pc.adRegistrantsOnAdDays, minN),
     attendance: judge(cur.attendance === null ? null : cur.attendance * 100, t.attendanceRate, cur.attRegs, minN),
     stayed: judge(cur.stayed === null ? null : cur.stayed * 100, t.stayedRate, cur.zoomAttendees, minN),
     attBuyer: judge(cur.attBuyer === null ? null : cur.attBuyer * 100, t.webinarConversion, cur.zoomAttendees, minN),
@@ -336,8 +336,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
               info={<p>Webinar registrants who have booked a call on any of TRC&apos;s calendars, with Tiffany or Nick, whenever they booked it. Cancelled or missed bookings count.</p>}
               delta={<Delta cur={cur.booked} prev={prev.booked} kind="count" label={vsLabel} />} />
             <Card n={2} title="Opt-in rate" value={pctOf(cur.optIn)} target={tgt(t.registrationRate, "%")} flag={f.optIn}
-              sub={`${num(pc.registrantsOnAdDays)} registrants ÷ ${num(totals.landing_page_views || totals.link_clicks)} ${clicksLabel}`}
-              info={<><p>Webinar registrants ÷ {clicksLabel}, counting only days that have ad data. Landing page views come with Meta; until then link clicks are used, as the tracker does.</p><p>GHL&apos;s funnel stats show a different opt-in rate: they divide opt-ins by every page view GHL counts on the registration page, ads or not, and GHL doesn&apos;t make those stats available to read. This one is registrants per Meta landing page view, each person counted once.</p></>}
+              sub={`${num(pc.adRegistrantsOnAdDays)} registrants from ads ÷ ${num(totals.landing_page_views || totals.link_clicks)} ${clicksLabel}`}
+              info={<><p>Webinar registrants who came from a Facebook or Instagram ad ÷ {clicksLabel}, counting only days that have ad data. Registrants who came another way (organic, email, a shared link) are left out, since they never show up in Meta&apos;s {clicksLabel}. Landing page views come with Meta; until then link clicks are used, as the tracker does.</p><p>GHL&apos;s funnel stats run a little lower: they divide opt-ins by every view of the registration page, ads or not, repeat views included, and GHL doesn&apos;t make those stats available to read.</p></>}
               delta={<Delta cur={cur.optIn} prev={prev.optIn} kind="rate" label={vsLabel} />} />
             <Card n={1} title="Cost per reg" value={adNone || cur.costPerContact === null ? "—" : usd(cur.costPerContact, 2)} target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerContact}
               sub={`ad spend ÷ ${num(pc.registrantsOnAdDays)} registrants on days with ad data`} warn={adWarn}
