@@ -5,7 +5,7 @@ import { groupPeople, normEmail, normName, normPhone, type Contactish } from "./
 
 export type RegRecord = {
   submission_id: string; contact_id: string | null; email: string | null; full_name: string | null; phone: string | null;
-  created_at: Date; session_at: Date | null; utm_campaign: string | null; utm_content: string | null; utm_term: string | null;
+  created_at: Date; session_at: Date | null; utm_source: string | null; utm_campaign: string | null; utm_content: string | null; utm_term: string | null;
 };
 export type ApptRecord = { id: string; contact_id: string | null; email: string | null; full_name: string | null; phone: string | null; start_at: Date };
 
@@ -17,11 +17,19 @@ export type FunnelPerson = {
   booked: boolean;               // any appointment on any of their contacts, any status, any time
   campaign: string | null; adset: string | null; ad: string | null;   // the ad of that first registration
   sessionAt: Date | null;        // the webinar that first registration picked
-  regs: Array<{ at: Date; sessionAt: Date | null; campaign: string | null; adset: string | null; ad: string | null }>;   // every registration, oldest first
+  regs: Array<{ at: Date; sessionAt: Date | null; campaign: string | null; adset: string | null; ad: string | null; fromAd: boolean }>;   // every registration, oldest first
 };
 
 /** A UTM value still holding Meta's macro ("{{ad.name}}", a preview click) names no ad. */
 const utm = (v: string | null) => (v && !v.startsWith("{{") ? v : null);
+
+/**
+ * The registration came through a Meta ad (Facebook or Instagram): its utm_source says so, or, with no source, it carries an
+ * ad's campaign. One with neither came some other way (organic, email, a shared or typed link) and is not in Meta's landing
+ * page views, so the opt-in rate leaves it out (2026-11-26: counting them put it at 10.6% against GHL's 9%).
+ */
+export const fromAd = (r: { utm_source: string | null; utm_campaign: string | null }) =>
+  r.utm_source ? /facebook|instagram|^fb|^ig|meta/i.test(r.utm_source) : !!utm(r.utm_campaign);
 
 /** Gave a name plus an email or a phone. */
 export const gaveContact = (r: { full_name: string | null; email: string | null; phone: string | null }) =>
@@ -52,12 +60,12 @@ export function buildPeople(regs: RegRecord[], appts: ApptRecord[]): FunnelPerso
       booked: booked.has(id),
       campaign: utm(first.utm_campaign), adset: utm(first.utm_content), ad: utm(first.utm_term),
       sessionAt: first.session_at,
-      regs: rs.map((r) => ({ at: r.created_at, sessionAt: r.session_at, campaign: utm(r.utm_campaign), adset: utm(r.utm_content), ad: utm(r.utm_term) })),
+      regs: rs.map((r) => ({ at: r.created_at, sessionAt: r.session_at, campaign: utm(r.utm_campaign), adset: utm(r.utm_content), ad: utm(r.utm_term), fromAd: fromAd(r) })),
     };
   });
 }
 
-export type PartialCounts = { registrants: number; booked: number; partials: number; registrantsOnAdDays: number };
+export type PartialCounts = { registrants: number; booked: number; partials: number; registrantsOnAdDays: number; adRegistrantsOnAdDays: number };
 type Row = { registrants: number; booked: number; partials: number };
 
 /** A person's first registration in [from, to), or null when they didn't register then. */
@@ -66,18 +74,22 @@ const firstIn = (p: FunnelPerson, from: Date, to: Date) => p.regs.find((r) => r.
 /**
  * Webinar registrants in [from, to): people who registered in those dates, each counted once however many contacts or
  * registrations they have. Each is booked or a partial, so registrants = booked + partials. `registrantsOnAdDays`: those whose
- * first registration in the dates fell on a day with ad data (cost per contact captured divides by it).
+ * first registration in the dates fell on a day with ad data (cost per reg divides by it). `adRegistrantsOnAdDays`: of those,
+ * the ones who came through an ad (any registration of theirs in the dates, fromAd), what the opt-in rate divides by Meta's
+ * landing page views: both sides then count ad traffic only.
  */
 export function countPartials(people: FunnelPerson[], from: Date, to: Date, adDays: ReadonlySet<string>, laDay: (d: Date) => string): PartialCounts {
-  let registrants = 0, booked = 0, onAdDays = 0;
+  let registrants = 0, booked = 0, onAdDays = 0, adOnAdDays = 0;
   for (const p of people) {
     const r = firstIn(p, from, to);
     if (!r) continue;
     registrants++;
     if (p.booked) booked++;
-    if (adDays.has(laDay(r.at))) onAdDays++;
+    if (!adDays.has(laDay(r.at))) continue;
+    onAdDays++;
+    if (p.regs.some((x) => x.fromAd && x.at >= from && x.at < to)) adOnAdDays++;
   }
-  return { registrants, booked, partials: registrants - booked, registrantsOnAdDays: onAdDays };
+  return { registrants, booked, partials: registrants - booked, registrantsOnAdDays: onAdDays, adRegistrantsOnAdDays: adOnAdDays };
 }
 
 const add = (out: Map<string, Row>, k: string, booked: boolean) => {

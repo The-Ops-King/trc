@@ -191,7 +191,7 @@ export async function loadFunnelPeople(): Promise<{ people: FunnelPerson[]; adDa
   const bookingsIncomplete = !state?.appts_done ? "the calendars are still being read back to 2024"
     : state.contacts_left > 0 ? `${state.contacts_left} booking contacts are still being read` : null;
   const regs = await sql<RegRecord[]>`
-    select submission_id, contact_id, email, full_name, phone, created_at, session_at, utm_campaign, utm_content, utm_term from trc.registrations`;
+    select submission_id, contact_id, email, full_name, phone, created_at, session_at, utm_source, utm_campaign, utm_content, utm_term from trc.registrations`;
   const appts = await sql<ApptRecord[]>`
     select a.id, a.contact_id, coalesce(a.email, g.email) as email, g.full_name, g.phone, a.start_at
     from trc.appointments a left join trc.ghl_contacts g on g.contact_id = a.contact_id`;

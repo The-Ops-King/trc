@@ -5,7 +5,7 @@ import { isTestOrTeam } from "./people.ts";
 
 const reg = (id: string, o: Partial<RegRecord>): RegRecord => ({
   submission_id: id, contact_id: null, email: null, full_name: null, phone: null, created_at: new Date("2026-11-10T18:00:00Z"),
-  session_at: null, utm_campaign: null, utm_content: null, utm_term: null, ...o,
+  session_at: null, utm_source: null, utm_campaign: null, utm_content: null, utm_term: null, ...o,
 });
 const appt = (id: string, o: Partial<ApptRecord>): ApptRecord => ({ id, contact_id: null, email: null, full_name: null, phone: null, start_at: new Date("2026-11-12T18:00:00Z"), ...o });
 
@@ -49,7 +49,7 @@ test("partials: a cancelled booking still counts as booked; registrants = booked
   );
   const from = new Date("2026-11-01"), to = new Date("2026-12-01");
   const all = countPartials(people, from, to, new Set(["2026-11-10"]), (d) => d.toISOString().slice(0, 10));
-  assert.deepEqual(all, { registrants: 3, booked: 1, partials: 2, registrantsOnAdDays: 3 });
+  assert.deepEqual(all, { registrants: 3, booked: 1, partials: 2, registrantsOnAdDays: 3, adRegistrantsOnAdDays: 0 });
   const ads = partialsByAd(people, from, to);
   assert.deepEqual(ads.get(adKey(null, null, "Ad 1")), { registrants: 2, booked: 1, partials: 1 });
   assert.deepEqual(ads.get(adKey(null, null, null)), { registrants: 1, booked: 0, partials: 1 });
@@ -66,7 +66,7 @@ test("partials: someone who first registered before the dates counts when they r
     [],
   );
   const n = countPartials(people, new Date("2026-11-01"), new Date("2026-12-01"), new Set(), (d) => d.toISOString().slice(0, 10));
-  assert.deepEqual(n, { registrants: 1, booked: 0, partials: 1, registrantsOnAdDays: 0 });
+  assert.deepEqual(n, { registrants: 1, booked: 0, partials: 1, registrantsOnAdDays: 0, adRegistrantsOnAdDays: 0 });
 });
 
 test("partials: dated by the first time they gave their contact", () => {
@@ -88,4 +88,18 @@ test("test and team entries", () => {
   assert.equal(isTestOrTeam("contest.winner@gmail.com", "Real Name", team), false);
   assert.equal(isTestOrTeam("jane@gmail.com", "Jane Doe", team), true);
   assert.equal(isTestOrTeam("jane@gmail.com", "Janet Smith", team), false);
+});
+
+test("opt-in counts only registrants who came through an ad: Facebook source, or an ad's campaign with no source", () => {
+  const people = buildPeople(
+    [reg("1", { full_name: "Ad Person", email: "a@x.com", utm_source: "Facebook", utm_campaign: "Standout" }),
+     reg("2", { full_name: "Organic Person", email: "o@x.com" }),
+     reg("3", { full_name: "No Source", email: "n@x.com", utm_campaign: "Standout CBO" }),
+     reg("4", { full_name: "Macro Only", email: "m@x.com", utm_campaign: "{{campaign.name}}" }),
+     reg("5", { full_name: "Email Person", email: "e@x.com", utm_source: "email", utm_campaign: "Standout" })],
+    [],
+  );
+  const c = countPartials(people, new Date("2026-11-01"), new Date("2026-12-01"), new Set(["2026-11-10"]), (d) => d.toISOString().slice(0, 10));
+  assert.equal(c.registrantsOnAdDays, 5);
+  assert.equal(c.adRegistrantsOnAdDays, 2);
 });
