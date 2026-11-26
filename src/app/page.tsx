@@ -229,7 +229,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
   if (!metaOn) warnings.push(`Meta isn't connected: ad spend, clicks, CPC and outbound CTR come from the team's tracker (FB Stats), and Results by ad has no spend per ad yet.`);
   if (adStale) warnings.push(`The tracker has no ad spend after ${shortDay(adStale)}, so spend for later days is missing and costs after that date aren't shown.`);
   if (fromTracker) warnings.push(`${fromTracker} of ${withAtt.length} webinars in this period take attendance from the team's tracker (typed in), not Zoom. Stayed to pitch and attendee → buyer count Zoom webinars only (from Nov 12).`);
-  if (onbUnknown) warnings.push(`${num(onbUnknown)} onboarding call${onbUnknown === 1 ? " has" : "s have"} no showed / no-show mark in GHL and no Zoom match, so the show rate leaves ${onbUnknown === 1 ? "it" : "them"} out.`);
+  if (onbUnknown) warnings.push(`${num(onbUnknown)} welcome call${onbUnknown === 1 ? " has" : "s have"} no showed / no-show mark in GHL and no Zoom match, so the show rate leaves ${onbUnknown === 1 ? "it" : "them"} out.`);
   if (funnelPeople.bookingsIncomplete) warnings.push(`Partials are too high for now: ${funnelPeople.bookingsIncomplete} (the hourly sync finishes this within a few hours), so some people who booked still count as partials.`);
   warnings.push("Churn needs Kajabi, which isn't connected. LTV is the cash a high-ticket buyer has paid on Whop so far; it will rise as payment plans and financing pay out.");
   if (!Object.keys(t).some((k) => !["minSample", "show", "close", "costPerCloseMax", "roasMin"].includes(k)))
@@ -284,7 +284,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         {sp.synced === "error" && <div className="notice err">The sync you just ran failed for at least one source. See Sync status at the bottom.</div>}
 
         <div className="glance">
-          <Card big title="Cost per contact captured" value={adNone || cur.costPerContact === null ? "—" : usd(cur.costPerContact, 2)}
+          <Card big title="Cost per reg" value={adNone || cur.costPerContact === null ? "—" : usd(cur.costPerContact, 2)}
             target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerContact} warn={adWarn}
             sub={`${usd(totals.ad_spend)} ad spend ÷ ${num(pc.registrantsOnAdDays)} webinar registrants`}
             info={<><p>Ad spend ÷ webinar registrants (people who gave their name plus an email or phone), on days that have ad data.</p><p>Not ÷ partials: that would go up exactly when more people book.</p></>}
@@ -293,18 +293,18 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             sub={`${num(cur.attendees)} of ${num(cur.attRegs)} registered`}
             info={<p>People who showed up ÷ people registered for that webinar, for webinars held in this period. From Zoom (Tiffany&apos;s room) when it has the webinar, otherwise the show-ups the team types into the tracker.</p>}
             delta={<Delta cur={cur.attendance} prev={prev.attendance} kind="rate" label={vsLabel} />} />
-          <Card big title={hostPick ? `${hostPick.name}'s show rate` : "Onboarding show rate"} value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
+          <Card big title={hostPick ? `${hostPick.name}'s welcome call show rate` : "Welcome call show rate"} value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
             sub={`${num(funnel.onb_attended)} of ${num(cur.onbKnown)} calls with a result`}
             warn={onbUnknown ? `${num(onbUnknown)} without a result` : undefined}
             info={<p>Leap Welcome calls (and their reschedules) in this period: showed ÷ calls with a result. A call is showed when it&apos;s marked so in GHL or someone other than the team joined its Zoom meeting.</p>}
             delta={<Delta cur={cur.showRate} prev={prev.showRate} kind="rate" label={vsLabel} />} />
-          <Card big title={hostPick ? `${hostPick.name}'s call → high ticket` : "Call → high ticket"} value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
+          <Card big title={hostPick ? `${hostPick.name}'s high ticket purchase rate` : "High ticket purchase rate"} value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
             sub={`${num(funnel.ht_after_onb_attended)} high-ticket buyers of ${num(funnel.onb_attended)} who showed`}
-            info={<p>People who bought Ignite or Mastermind on Whop after showing to an onboarding call, ÷ people who showed to one, in this period.</p>}
+            info={<><p>People who bought Ignite or Mastermind on Whop after showing to a welcome call, ÷ people who showed to one, in this period.</p><p>Sales paid through Shop Pay are not counted: the dashboard has no access to them.</p></>}
             delta={<Delta cur={cur.callToHt} prev={prev.callToHt} kind="rate" label={vsLabel} />} />
           <Card big title="High-ticket cash" value={usd(funnel.ht_cash)} target={tgt(t.roasMin, "x")} flag={f.roas}
             sub={`${times(cur.roas)} per $1 of ad spend`}
-            info={<p>Whop cash for Ignite and Mastermind, net of refunds, by payment date. Its target is cash per $1 of ad spend (&quot;KPI Min ROAS&quot;).</p>}
+            info={<><p>Whop cash for Ignite and Mastermind, net of refunds, by payment date. Its target is cash per $1 of ad spend (&quot;KPI Min ROAS&quot;).</p><p>Sales paid through Shop Pay are not in it: the dashboard has no access to them.</p></>}
             delta={<Delta cur={cur.htCash} prev={prev.htCash} kind="count" label={vsLabel} money />} />
         </div>
 
@@ -337,9 +337,9 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
               delta={<Delta cur={cur.booked} prev={prev.booked} kind="count" label={vsLabel} />} />
             <Card n={2} title="Opt-in rate" value={pctOf(cur.optIn)} target={tgt(t.registrationRate, "%")} flag={f.optIn}
               sub={`${num(pc.registrantsOnAdDays)} registrants ÷ ${num(totals.landing_page_views || totals.link_clicks)} ${clicksLabel}`}
-              info={<p>Webinar registrants ÷ {clicksLabel}, counting only days that have ad data. Landing page views come with Meta; until then link clicks are used, as the tracker does.</p>}
+              info={<><p>Webinar registrants ÷ {clicksLabel}, counting only days that have ad data. Landing page views come with Meta; until then link clicks are used, as the tracker does.</p><p>GHL&apos;s funnel stats show a different opt-in rate: they divide opt-ins by every page view GHL counts on the registration page, ads or not, and GHL doesn&apos;t make those stats available to read. This one is registrants per Meta landing page view, each person counted once.</p></>}
               delta={<Delta cur={cur.optIn} prev={prev.optIn} kind="rate" label={vsLabel} />} />
-            <Card n={1} title="Cost per contact captured" value={adNone || cur.costPerContact === null ? "—" : usd(cur.costPerContact, 2)} target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerContact}
+            <Card n={1} title="Cost per reg" value={adNone || cur.costPerContact === null ? "—" : usd(cur.costPerContact, 2)} target={tgt(t.costPerRegistrantMax, "$", true)} flag={f.costPerContact}
               sub={`ad spend ÷ ${num(pc.registrantsOnAdDays)} registrants on days with ad data`} warn={adWarn}
               delta={<Delta cur={cur.costPerContact} prev={prev.costPerContact} kind="count" better="down" label={vsLabel} money />} />
           </div>
@@ -438,7 +438,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           )}
         </Section>
 
-        <Section title="Onboarding calls and high ticket"
+        <Section title="Welcome calls and high ticket"
           aside={(
             <nav className="seg small-seg" aria-label="Whose calls">
               <span className="muted small">Calls</span>
@@ -448,16 +448,16 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           )}
           intro={<>Leap Welcome calls (and reschedules) by the day of the call, {hostPick ? <><b>{hostPick.name}&apos;s calls only</b> (the calls GHL assigned to {hostPick.name})</> : <>everyone&apos;s (including bookings from before the calendar assigned a host, through Oct 29)</>}; high-ticket sales (Ignite, Mastermind) from Whop by payment date, every buyer{hostPick ? `, with "from calls" meaning ${hostPick.name}'s calls` : ""}.</>}>
           <div className="grid g4">
-            <Card n={8} title="Onboarding calls attended" value={num(funnel.onb_attended)} sub={`of ${num(funnel.onb_booked)} booked`}
+            <Card n={8} title="Welcome calls attended" value={num(funnel.onb_attended)} sub={`of ${num(funnel.onb_booked)} booked`}
               warn={onbUnknown ? `${num(onbUnknown)} without a result` : undefined}
               delta={<Delta cur={cur.onbAttended} prev={prev.onbAttended} kind="count" label={vsLabel} />} />
-            <Card n={9} title="Onboarding show rate" value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
+            <Card n={9} title="Welcome call show rate" value={pctOf(cur.showRate)} target={tgt(t.show, "%")} flag={f.show}
               sub={`of ${num(cur.onbKnown)} calls with a result`}
               delta={<Delta cur={cur.showRate} prev={prev.showRate} kind="rate" label={vsLabel} />} />
             <Card n={10} title="High-ticket buyers from calls" value={num(funnel.ht_after_onb_attended)} sub={`of ${num(funnel.ht_buyers)} high-ticket buyers`}
-              info={<p>Ignite or Mastermind buyers in this period who showed to an onboarding call before paying.</p>}
+              info={<p>Ignite or Mastermind buyers in this period who showed to a welcome call before paying. Shop Pay sales are not counted: the dashboard has no access to them.</p>}
               delta={<Delta cur={cur.htFromCalls} prev={prev.htFromCalls} kind="count" label={vsLabel} />} />
-            <Card n={11} title="Call → high ticket" value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
+            <Card n={11} title="High ticket purchase rate" value={pctOf(cur.callToHt)} target={tgt(t.close, "%")} flag={f.close}
               sub="of people who showed to a call"
               delta={<Delta cur={cur.callToHt} prev={prev.callToHt} kind="rate" label={vsLabel} />} />
             <Card n={12} title="High-ticket cash collected" value={usd(funnel.ht_cash)} sub={`all Whop: ${usd(totals.cash_all)}`}
@@ -615,7 +615,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <summary>How each number is calculated</summary>
           <ul className="defs">
             <li><b>Numbered cards (1–16)</b> follow the KPI list. Webinar numbers cover webinars held in the selected dates; a purchase belongs to the most recent webinar the buyer registered for before paying (matched by email).</li>
-            <li><b>Webinar registrants</b> = people who registered for a webinar in the dates (name plus email or phone), each counted once however many registrations or GHL contacts they have (same name and email, or same name and phone, is one person). <b>Partials</b> = registrants who have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick. <b>Booked a call</b> = the rest; a cancelled or missed booking still counts as booked. Registrants = partials + booked a call. <b>Cost per contact captured</b> = ad spend ÷ webinar registrants (not ÷ partials: that would rise exactly when booking improves). Test entries and the team (GHL users, TRC and agency addresses) are left out of every number on the page.</li>
+            <li><b>Webinar registrants</b> = people who registered for a webinar in the dates (name plus email or phone), each counted once however many registrations or GHL contacts they have (same name and email, or same name and phone, is one person). <b>Partials</b> = registrants who have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick. <b>Booked a call</b> = the rest; a cancelled or missed booking still counts as booked. Registrants = partials + booked a call. <b>Cost per reg</b> = ad spend ÷ webinar registrants (not ÷ partials: that would rise exactly when booking improves). Test entries and the team (GHL users, TRC and agency addresses) are left out of every number on the page.</li>
             <li><b>Attendance</b> = people who showed up ÷ people registered. From Zoom (Tiffany&apos;s Personal Meeting Room is the webinar) when it has the webinar; before Nov 12, the show-ups the team types into the tracker. <b>Stayed to pitch</b> = still in the room {PITCH_MINUTE} minutes after it started (Zoom only).</li>
             <li><b>Onboarding</b> = Leap Welcome Calls, including reschedules. Showed = marked so in GHL, otherwise someone other than the team joined the call&apos;s Zoom meeting.</li>
             <li><b>High ticket</b> = Ignite and Mastermind on Whop. <b>Cash</b> = Whop payments net of refunds; failed checkouts never count. <b>Paid in full</b> = card/PayPal, all within 7 days of the first payment. <b>Third-party financing</b> = Sezzle, Klarna, Afterpay, ClarityPay or Splitit. <b>Payment plan</b> = Whop splits it.</li>
