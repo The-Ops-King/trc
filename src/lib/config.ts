@@ -10,11 +10,13 @@ export const APPOINTMENTS_FROM = "2024-01-01";
 
 /**
  * Who hosts calls, by GHL user id, for the dashboard's host toggle (Tyler, 2026-11-16: Nick's numbers on their own, Tiffany's on
- * hers, or both). A booking with no host (made before the round robin assigned anyone) counts under "All" only.
+ * hers, or both). A booking with no host (made before the round robin assigned anyone) counts under "All" only. A new closer is one
+ * more entry here (their GHL user id); the toggle and their numbers follow.
  */
 export const CALL_HOSTS: ReadonlyArray<{ key: string; name: string; ghlUserId: string }> = [
   { key: "nick", name: "Nick", ghlUserId: "H8UbUee6hajfvonGAHOS" },
   { key: "tiffany", name: "Tiffany", ghlUserId: "mnOeNUNPmTiuwZSH890N" },
+  { key: "daniel", name: "Daniel", ghlUserId: "GIVtc6kZTyR1yriH6KNe" }, // Daniel Reidy, closer from 2026-11-28
 ];
 
 /** GHL forms whose submissions are webinar registrations. */
