@@ -131,7 +131,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     : days === 2 ? `today and yesterday (${shortDay(fromYmd)} – ${shortDay(toYmd)})`
     : `the last ${days} days (${shortDay(fromYmd)} – ${shortDay(toYmd)})`;
   const vsLabel = "vs before";
-  // The call numbers for everyone, Nick only or Tiffany only (Tyler, 2026-11-16); the rest of the page is everyone's either way.
+  // The call numbers for everyone or one host only (CALL_HOSTS; Tyler, 2026-11-16); the rest of the page is everyone's either way.
   const hostPick = CALL_HOSTS.find((h) => h.key === sp.host) ?? null;
   const link = (o: { days?: number; cmp?: string; keepCustom?: boolean; host?: string | null }) => {
     const c = (o.cmp ?? cmp) === "final" ? "&cmp=final" : "";
@@ -330,10 +330,10 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
               info={<><p>People who registered for a webinar in these dates (name plus email or phone), each counted once however many registrations or GHL contacts they have (same name and email, or same name and phone, is one person).</p><p>Webinar registrants = partials + booked a call.</p></>}
               delta={<Delta cur={cur.registrants} prev={prev.registrants} kind="count" label={vsLabel} />} />
             <Card title="Partials" value={num(pc.partials)} sub={`${pctOf(cur.partialRate)} of ${num(pc.registrants)} webinar registrants did not book a call`}
-              info={<><p>Webinar registrants who have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick. A booking that was later cancelled or missed still counts as booked.</p><p>Test entries and the team are never partials.</p></>}
+              info={<><p>Webinar registrants who have never booked a call on any of TRC&apos;s calendars, with anyone on the team. A booking that was later cancelled or missed still counts as booked.</p><p>Test entries and the team are never partials.</p></>}
               delta={<Delta cur={cur.partials} prev={prev.partials} kind="count" better="down" label={vsLabel} />} />
             <Card title="Booked a call" value={num(pc.booked)} sub={`${pctOf(cur.bookedRate)} of ${num(pc.registrants)} webinar registrants`}
-              info={<p>Webinar registrants who have booked a call on any of TRC&apos;s calendars, with Tiffany or Nick, whenever they booked it. Cancelled or missed bookings count.</p>}
+              info={<p>Webinar registrants who have booked a call on any of TRC&apos;s calendars, with anyone on the team, whenever they booked it. Cancelled or missed bookings count.</p>}
               delta={<Delta cur={cur.booked} prev={prev.booked} kind="count" label={vsLabel} />} />
             <Card n={2} title="Opt-in rate" value={pctOf(cur.optIn)} target={tgt(t.registrationRate, "%")} flag={f.optIn}
               sub={`${num(pc.adRegistrantsOnAdDays)} registrants from ads ÷ ${num(totals.landing_page_views || totals.link_clicks)} ${clicksLabel}`}
@@ -615,7 +615,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <summary>How each number is calculated</summary>
           <ul className="defs">
             <li><b>Numbered cards (1–16)</b> follow the KPI list. Webinar numbers cover webinars held in the selected dates; a purchase belongs to the most recent webinar the buyer registered for before paying (matched by email).</li>
-            <li><b>Webinar registrants</b> = people who registered for a webinar in the dates (name plus email or phone), each counted once however many registrations or GHL contacts they have (same name and email, or same name and phone, is one person). <b>Partials</b> = registrants who have never booked a call on any of TRC&apos;s calendars, with Tiffany or Nick. <b>Booked a call</b> = the rest; a cancelled or missed booking still counts as booked. Registrants = partials + booked a call. <b>Cost per reg</b> = ad spend ÷ webinar registrants (not ÷ partials: that would rise exactly when booking improves). Test entries and the team (GHL users, TRC and agency addresses) are left out of every number on the page.</li>
+            <li><b>Webinar registrants</b> = people who registered for a webinar in the dates (name plus email or phone), each counted once however many registrations or GHL contacts they have (same name and email, or same name and phone, is one person). <b>Partials</b> = registrants who have never booked a call on any of TRC&apos;s calendars, with anyone on the team. <b>Booked a call</b> = the rest; a cancelled or missed booking still counts as booked. Registrants = partials + booked a call. <b>Cost per reg</b> = ad spend ÷ webinar registrants (not ÷ partials: that would rise exactly when booking improves). Test entries and the team (GHL users, TRC and agency addresses) are left out of every number on the page.</li>
             <li><b>Attendance</b> = people who showed up ÷ people registered. From Zoom (Tiffany&apos;s Personal Meeting Room is the webinar) when it has the webinar; before Nov 12, the show-ups the team types into the tracker. <b>Stayed to pitch</b> = still in the room {PITCH_MINUTE} minutes after it started (Zoom only).</li>
             <li><b>Onboarding</b> = Leap Welcome Calls, including reschedules. Showed = marked so in GHL, otherwise someone other than the team joined the call&apos;s Zoom meeting.</li>
             <li><b>High ticket</b> = Ignite and Mastermind on Whop. <b>Cash</b> = Whop payments net of refunds; failed checkouts never count. <b>Paid in full</b> = card/PayPal, all within 7 days of the first payment. <b>Third-party financing</b> = Sezzle, Klarna, Afterpay, ClarityPay or Splitit. <b>Payment plan</b> = Whop splits it.</li>
